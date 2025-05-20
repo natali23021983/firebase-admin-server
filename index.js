@@ -1,13 +1,16 @@
 const express = require('express');
-const admin = require('firebase-admin');
+
+const admin = require("firebase-admin");
+
+const serviceAccount = JSON.parse(process.env.FIREBASE_CONFIG);
+
 const app = express();
 app.use(express.json());
 
-const serviceAccount = require('./teremok-1a3ff-firebase-adminsdk-fbsvc-3d34a609b1.json');
 
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
-  databaseURL: "https://teremok-1a3ff-firebase-adminsdk-fbsvc-3d34a609b1"
+  databaseURL: "https://teremok-1a3ff-default-rtdb.firebaseio.com"
 });
 
 const db = admin.database();
