@@ -2,7 +2,8 @@ require('dotenv').config();
 const express = require('express');
 const admin = require('firebase-admin');
 
-const serviceAccount = require('./teremok-1a3ff-firebase-adminsdk-fbsvc-7fc9275741.json');
+// Получаем JSON из переменной окружения и обрабатываем переносы строк
+const serviceAccount = JSON.parse(process.env.FIREBASE_CONFIG.replace(/\\n/g, '\n'));
 
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
