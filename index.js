@@ -54,9 +54,19 @@ app.post('/deleteUserByName', async (req, res) => {
           for (const childId in user.children) {
             const child = user.children[childId];
             const groupId = child.group;
+
             if (groupId) {
-              await db.ref(`groups/${groupId}/children/${childId}`).remove();
-              console.log(`Удалён ребёнок ${child.fullName} из группы ${groupId}`);
+              const groupChildrenRef = db.ref(`groups/${groupId}/children`);
+              const groupChildrenSnap = await groupChildrenRef.once('value');
+              const groupChildren = groupChildrenSnap.val();
+
+              for (const gcId in groupChildren) {
+                if (groupChildren[gcId] === child.fullName) {
+                  await groupChildrenRef.child(gcId).remove();
+                  console.log(`Удалён ребёнок ${child.fullName} из группы ${groupId}`);
+                  break;
+                }
+              }
             }
           }
         }
@@ -110,8 +120,17 @@ app.post('/deleteUserByName', async (req, res) => {
             console.log(`Найден ребёнок: ${child.fullName} (${childId}) у пользователя ${userId}`);
 
             if (child.group) {
-              await db.ref(`groups/${child.group}/children/${childId}`).remove();
-              console.log(`Удалён ребёнок ${child.fullName} из группы ${child.group}`);
+              const groupChildrenRef = db.ref(`groups/${child.group}/children`);
+              const groupChildrenSnap = await groupChildrenRef.once('value');
+              const groupChildren = groupChildrenSnap.val();
+
+              for (const gcId in groupChildren) {
+                if (groupChildren[gcId] === child.fullName) {
+                  await groupChildrenRef.child(gcId).remove();
+                  console.log(`Удалён ребёнок ${child.fullName} из группы ${child.group}`);
+                  break;
+                }
+              }
             }
 
             await db.ref(`users/${userId}/children/${childId}`).remove();
@@ -133,6 +152,3 @@ app.post('/deleteUserByName', async (req, res) => {
     return res.status(500).send("Ошибка при удалении.");
   }
 });
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Сервер запущен на порту ${PORT}`));
