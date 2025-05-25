@@ -2,8 +2,15 @@ require('dotenv').config();
 const express = require('express');
 const admin = require('firebase-admin');
 
-// Получаем JSON из переменной окружения и обрабатываем переносы строк
-const serviceAccount = JSON.parse(process.env.FIREBASE_CONFIG.replace(/\\n/g, '\n'));
+// 🔽 Декодирование base64
+const base64 = process.env.FIREBASE_CONFIG;
+
+if (!base64) {
+  throw new Error("FIREBASE_CONFIG_BASE64 переменная не найдена в .env");
+}
+
+const decoded = Buffer.from(base64, 'base64').toString('utf8');
+const serviceAccount = JSON.parse(decoded);
 
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
