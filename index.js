@@ -1,27 +1,25 @@
+require('dotenv').config();
 const express = require('express');
+const admin = require('firebase-admin');
 
-const admin = require("firebase-admin");
-
-const serviceAccount = JSON.parse(process.env.FIREBASE_CONFIG);
-
-const app = express();
-app.use(express.json());
-
+const serviceAccount = require('./teremok-1a3ff-firebase-adminsdk-fbsvc-7fc9275741.json');
 
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
   databaseURL: "https://teremok-1a3ff-default-rtdb.firebaseio.com"
 });
 
+const app = express();
+app.use(express.json());
+
 const db = admin.database();
 const auth = admin.auth();
 
-// 🔄 Удаление пользователя по имени
 app.post('/deleteUserByName', async (req, res) => {
   const fullName = req.body.fullName;
+  if (!fullName) return res.status(400).send("fullName обязателен");
 
   try {
-    // Найдём всех пользователей
     const usersSnapshot = await db.ref('users').once('value');
     const users = usersSnapshot.val();
 
@@ -30,61 +28,86 @@ app.post('/deleteUserByName', async (req, res) => {
     for (const userId in users) {
       const user = users[userId];
 
-      // === Удаление родителя ===
-      if (user.name === fullName && user.role === 'родитель') {
+      console.log(`Проверяем пользователя: userId=${userId}, name='${user.name}', role='${user.role}'`);
+
+      // === Родитель ===
+      if (
+        user.name &&
+        user.name.trim().toLowerCase() === fullName.trim().toLowerCase() &&
+        user.role &&
+        user.role.trim().toLowerCase() === 'родитель'
+      ) {
         found = true;
 
-        // Удаление всех его детей
+        console.log(`Найден родитель: ${user.name} (${userId})`);
+
+        // Удалить детей из групп
         if (user.children) {
           for (const childId in user.children) {
             const child = user.children[childId];
             const groupId = child.group;
-
-            // Удалить из группы
             if (groupId) {
               await db.ref(`groups/${groupId}/children/${childId}`).remove();
+              console.log(`Удалён ребёнок ${child.fullName} из группы ${groupId}`);
             }
           }
         }
 
         // Удалить родителя
         await db.ref(`users/${userId}`).remove();
-        await auth.deleteUser(userId); // из Firebase Auth
+        await auth.deleteUser(userId);
+        console.log(`Родитель ${user.name} удалён из базы и авторизации`);
+
         return res.send("Родитель и его дети удалены.");
       }
 
-      // === Удаление педагога ===
-      if (user.name === fullName && user.role === 'педагог') {
+      // === Педагог ===
+      if (
+        user.name &&
+        user.name.trim().toLowerCase() === fullName.trim().toLowerCase() &&
+        user.role &&
+        user.role.trim().toLowerCase() === 'педагог'
+      ) {
         found = true;
 
-        // Удалить из групп
+        console.log(`Найден педагог: ${user.name} (${userId})`);
+
         const groupsSnapshot = await db.ref('groups').once('value');
         const groups = groupsSnapshot.val();
+
         for (const groupId in groups) {
           if (groups[groupId].teachers && groups[groupId].teachers[userId]) {
             await db.ref(`groups/${groupId}/teachers/${userId}`).remove();
+            console.log(`Удалён педагог ${user.name} из группы ${groupId}`);
           }
         }
 
         await db.ref(`users/${userId}`).remove();
         await auth.deleteUser(userId);
+        console.log(`Педагог ${user.name} удалён из базы и авторизации`);
+
         return res.send("Педагог удалён.");
       }
 
-      // === Проверка детей у родителя ===
+      // === Ребёнок по полному имени ===
       if (user.children) {
         for (const childId in user.children) {
           const child = user.children[childId];
-          if (child.fullName === fullName) {
+          if (
+            child.fullName &&
+            child.fullName.trim().toLowerCase() === fullName.trim().toLowerCase()
+          ) {
             found = true;
 
-            // Удалить из группы
+            console.log(`Найден ребёнок: ${child.fullName} (${childId}) у пользователя ${userId}`);
+
             if (child.group) {
               await db.ref(`groups/${child.group}/children/${childId}`).remove();
+              console.log(`Удалён ребёнок ${child.fullName} из группы ${child.group}`);
             }
 
-            // Удалить у родителя
             await db.ref(`users/${userId}/children/${childId}`).remove();
+            console.log(`Удалён ребёнок ${child.fullName} у родителя ${user.name}`);
 
             return res.send("Ребёнок удалён.");
           }
@@ -93,15 +116,15 @@ app.post('/deleteUserByName', async (req, res) => {
     }
 
     if (!found) {
+      console.log(`Пользователь с именем "${fullName}" не найден.`);
       return res.status(404).send("Пользователь не найден.");
     }
 
   } catch (error) {
-    console.error(error);
+    console.error("Ошибка при удалении пользователя:", error);
     return res.status(500).send("Ошибка при удалении.");
   }
 });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Сервер запущен на порту ${PORT}`));
-
