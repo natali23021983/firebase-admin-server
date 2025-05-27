@@ -204,3 +204,10 @@ app.post("/update-user", async (req, res) => {
         return res.status(500).json({ error: "Ошибка сервера: " + error.message });
     }
 });
+
+const PORT = process.env.PORT || 3000;
+
+app.listen(PORT, () => {
+  console.log(`✅ Сервер запущен на порту ${PORT}`);
+});
+
