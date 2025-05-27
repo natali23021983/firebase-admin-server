@@ -161,33 +161,46 @@ app.post("/update-user", async (req, res) => {
             return res.status(400).json({ error: "fullName и newEmail обязательны" });
         }
 
-        // 1. Найти пользователя в Realtime Database по имени
         const snapshot = await db.ref("users").orderByChild("name").equalTo(fullName).once("value");
 
         if (!snapshot.exists()) {
             return res.status(404).json({ error: "Пользователь не найден" });
         }
 
-        // 2. Получить userId и ссылку на узел
-        const userKey = Object.keys(snapshot.val())[0];
-        const userData = snapshot.val()[userKey];
+        const users = snapshot.val();
+        const keys = Object.keys(users);
+
+        if (keys.length > 1) {
+            return res.status(400).json({ error: "Найдено несколько пользователей с таким именем" });
+        }
+
+        const userKey = keys[0];
+        const userData = users[userKey];
         const userId = userData.userId;
 
         if (!userId) {
             return res.status(400).json({ error: "userId не найден в базе" });
         }
 
-        // 3. Обновить email в Firebase Authentication
-        await admin.auth().updateUser(userId, {
-            email: newEmail
-        });
+        // Обновление в Auth
+        await admin.auth().updateUser(userId, { email: newEmail });
 
-        // 4. Обновить email в Realtime Database
+        // Обновление в Realtime Database
         await db.ref(`users/${userKey}`).update({ email: newEmail });
 
-        return res.json({ message: "Email обновлен в базе и авторизации", userId });
+        return res.json({
+            message: "Email обновлен в базе и авторизации",
+            userId,
+            updatedUser: { name: fullName, email: newEmail }
+        });
+
     } catch (error) {
         console.error("Ошибка при обновлении email:", error);
+
+        if (error.code === 'auth/email-already-exists') {
+            return res.status(400).json({ error: "Такой email уже используется другим аккаунтом" });
+        }
+
         return res.status(500).json({ error: "Ошибка сервера: " + error.message });
     }
 });
