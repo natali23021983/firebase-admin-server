@@ -160,6 +160,7 @@ app.post("/update-user", async (req, res) => {
         if (!fullName || !newEmail) {
             console.log("Ошибка: fullName и newEmail обязательны");
             return res.status(400).json({ error: "fullName и newEmail обязательны" });
+        }
 
 
         console.log(`Поиск пользователя по имени: "${fullName}"...`);
