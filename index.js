@@ -158,19 +158,24 @@ app.post("/update-user", async (req, res) => {
         const { fullName, newEmail } = req.body;
 
         if (!fullName || !newEmail) {
+            console.log("Ошибка: fullName и newEmail обязательны");
             return res.status(400).json({ error: "fullName и newEmail обязательны" });
-        }
 
+
+        console.log(`Поиск пользователя по имени: "${fullName}"...`);
         const snapshot = await db.ref("users").orderByChild("name").equalTo(fullName).once("value");
 
         if (!snapshot.exists()) {
+            console.log("Пользователь не найден");
             return res.status(404).json({ error: "Пользователь не найден" });
         }
 
         const users = snapshot.val();
         const keys = Object.keys(users);
+        console.log(`Найдено пользователей: ${keys.length}`);
 
         if (keys.length > 1) {
+            console.log("⚠️ Найдено несколько пользователей с таким именем");
             return res.status(400).json({ error: "Найдено несколько пользователей с таким именем" });
         }
 
@@ -179,14 +184,20 @@ app.post("/update-user", async (req, res) => {
         const userId = userData.userId;
 
         if (!userId) {
+            console.log("❌ userId не найден в базе");
             return res.status(400).json({ error: "userId не найден в базе" });
         }
+
+        console.log(`📧 Текущий email пользователя: ${userData.email}`);
+        console.log(`🔄 Обновление email на: ${newEmail}`);
 
         // Обновление в Auth
         await admin.auth().updateUser(userId, { email: newEmail });
 
         // Обновление в Realtime Database
         await db.ref(`users/${userKey}`).update({ email: newEmail });
+
+        console.log(`✅ Email успешно обновлен для пользователя ${fullName} (ID: ${userId})`);
 
         return res.json({
             message: "Email обновлен в базе и авторизации",
@@ -195,9 +206,10 @@ app.post("/update-user", async (req, res) => {
         });
 
     } catch (error) {
-        console.error("Ошибка при обновлении email:", error);
+        console.error("🔥 Ошибка при обновлении email:", error.message);
 
         if (error.code === 'auth/email-already-exists') {
+            console.log(`❌ Такой email уже используется: ${newEmail}`);
             return res.status(400).json({ error: "Такой email уже используется другим аккаунтом" });
         }
 
@@ -210,4 +222,3 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`✅ Сервер запущен на порту ${PORT}`);
 });
-
