@@ -235,6 +235,12 @@ app.post("/update-user", async (req, res) => {
 });
 
 app.post('/upload', upload.single('file'), (req, res) => {
+  if (!req.file) {
+    return res.status(400).send('Файл не загружен');
+  }
+
+  console.log('Файл получен:', req.file);
+  
   const fileContent = fs.readFileSync(req.file.path);
   const fileName = Date.now() + '-' + req.file.originalname;
 
@@ -260,7 +266,11 @@ app.post('/upload', upload.single('file'), (req, res) => {
 });
 
 
-const PORT = process.env.PORT || 10000;
+const PORT = process.env.PORT;
+
+app.get("/", (req, res) => {
+  res.send("Сервер работает");
+});
 
 app.listen(PORT, () => {
   console.log(`Сервер запущен на порту ${PORT}`);
