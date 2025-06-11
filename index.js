@@ -5,6 +5,22 @@ const admin = require('firebase-admin');
 // 🔽 Декодирование base64
 const base64 = process.env.FIREBASE_CONFIG;
 
+const AWS = require('aws-sdk');
+const multer = require('multer');
+const fs = require('fs');
+
+const upload = multer({ dest: 'uploads/' }); 
+
+const s3 = new AWS.S3({
+  endpoint: 'https://storage.yandexcloud.net',
+  accessKeyId: process.env.YC_ACCESS_KEY,
+  secretAccessKey: process.env.YC_SECRET_KEY,
+  region: 'ru-central1'
+});
+
+const BUCKET_NAME = 'teremok'; // имя бакета
+
+
 if (!base64) {
   throw new Error("FIREBASE_CONFIG_BASE64 переменная не найдена в .env");
 }
@@ -176,7 +192,7 @@ app.post("/update-user", async (req, res) => {
         console.log(`Найдено пользователей: ${keys.length}`);
 
         if (keys.length > 1) {
-            console.log("⚠️ Найдено несколько пользователей с таким именем");
+            console.log("Найдено несколько пользователей с таким именем");
             return res.status(400).json({ error: "Найдено несколько пользователей с таким именем" });
         }
 
@@ -185,12 +201,12 @@ app.post("/update-user", async (req, res) => {
         const userId = userData.userId;
 
         if (!userId) {
-            console.log("❌ userId не найден в базе");
+            console.log("userId не найден в базе");
             return res.status(400).json({ error: "userId не найден в базе" });
         }
 
-        console.log(`📧 Текущий email пользователя: ${userData.email}`);
-        console.log(`🔄 Обновление email на: ${newEmail}`);
+        console.log(`Текущий email пользователя: ${userData.email}`);
+        console.log(`Обновление email на: ${newEmail}`);
 
         // Обновление в Auth
         await admin.auth().updateUser(userId, { email: newEmail });
@@ -198,7 +214,7 @@ app.post("/update-user", async (req, res) => {
         // Обновление в Realtime Database
         await db.ref(`users/${userKey}`).update({ email: newEmail });
 
-        console.log(`✅ Email успешно обновлен для пользователя ${fullName} (ID: ${userId})`);
+        console.log(`Email успешно обновлен для пользователя ${fullName} (ID: ${userId})`);
 
         return res.json({
             message: "Email обновлен в базе и авторизации",
@@ -207,10 +223,10 @@ app.post("/update-user", async (req, res) => {
         });
 
     } catch (error) {
-        console.error("🔥 Ошибка при обновлении email:", error.message);
+        console.error("Ошибка при обновлении email:", error.message);
 
         if (error.code === 'auth/email-already-exists') {
-            console.log(`❌ Такой email уже используется: ${newEmail}`);
+            console.log(`Такой email уже используется: ${newEmail}`);
             return res.status(400).json({ error: "Такой email уже используется другим аккаунтом" });
         }
 
@@ -218,8 +234,34 @@ app.post("/update-user", async (req, res) => {
     }
 });
 
-const PORT = process.env.PORT || 3000;
+app.post('/upload', upload.single('file'), (req, res) => {
+  const fileContent = fs.readFileSync(req.file.path);
+  const fileName = Date.now() + '-' + req.file.originalname;
+
+  const params = {
+    Bucket: BUCKET_NAME, // используем константу
+    Key: fileName,       // 🔄 справлено с filename на fileName
+    Body: fileContent,   // 🔄 используем fileContent (а не file.buffer)
+    ContentType: req.file.mimetype,
+    ACL: 'public-read'
+  };
+
+  s3.upload(params, (err, data) => {
+    fs.unlinkSync(req.file.path); // удаляем временный файл
+
+    if (err) {
+      console.error('Ошибка загрузки:', err);
+      return res.status(500).send('Ошибка загрузки файла');
+    }
+
+    console.log('Файл успешно загружен:', data.Location);
+    res.json({ url: data.Location }); // ссылка на файл
+  });
+});
+
+
+const PORT = process.env.PORT || 10000;
 
 app.listen(PORT, () => {
-  console.log(`✅ Сервер запущен на порту ${PORT}`);
+  console.log(`Сервер запущен на порту ${PORT}`);
 });
