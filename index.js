@@ -252,6 +252,24 @@ app.post('/addNews', async (req, res) => {
   }
 });
 
+app.get('/news/:groupId', async (req, res) => {
+  try {
+    const { groupId } = req.params;
+    const newsSnapshot = await db.ref(`news/${groupId}`).orderByChild('timestamp').once('value');
+    const news = newsSnapshot.val() || {};
+
+    // Можно отсортировать по времени (последние сверху)
+    const sortedNews = Object.entries(news)
+      .sort(([, a], [, b]) => b.timestamp - a.timestamp)
+      .map(([id, item]) => ({ id, ...item }));
+
+    res.json(sortedNews);
+  } catch (error) {
+    console.error('Ошибка при получении новостей:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // ===== Удаление новости =====
 app.post('/deleteNews', async (req, res) => {
   try {
