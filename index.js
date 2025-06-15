@@ -1,15 +1,22 @@
 require('dotenv').config();
 const express = require('express');
+const cors = require("cors");
 const admin = require('firebase-admin');
-const AWS = require('aws-sdk');
 const multer = require('multer');
-const fs = require('fs');
 const { v4: uuidv4 } = require('uuid'); // ✅ импорт uuid
+const { S3Client, PutObjectCommand, DeleteObjectCommand } = require("@aws-sdk/client-s3");
+const bodyParser = require("body-parser");
 const path = require('path');
 
 const app = express();
-app.use(express.json({ limit: '10mb' })); // для base64 изображений
-app.use(express.urlencoded({ extended: true }));
+app.use(cors());
+
+const upload = multer({ storage: multer.memoryStorage() });
+
+admin.initializeApp({
+  credential: admin.credential.cert(require("./serviceAccountKey.json")),
+  databaseURL: process.env.FIREBASE_DATABASE_URL,
+});
 
 // ===== Firebase Admin SDK =====
 const base64 = process.env.FIREBASE_CONFIG;
@@ -28,32 +35,46 @@ const db = admin.database();
 const auth = admin.auth();
 
 // ===== S3 (Yandex Cloud) =====
-const s3 = new AWS.S3({
-  endpoint: 'https://storage.yandexcloud.net',
-  accessKeyId: process.env.YC_ACCESS_KEY,
-  secretAccessKey: process.env.YC_SECRET_KEY,
-  region: 'ru-central1'
+const s3 = new S3Client({
+  region: "ru-central1",
+  endpoint: "https://storage.yandexcloud.net",
+  credentials: {
+    accessKeyId: process.env.YC_ACCESS_KEY_ID,
+    secretAccessKey: process.env.YC_SECRET_ACCESS_KEY,
+  },
 });
 
 const BUCKET_NAME = 'teremok';
 const upload = multer({ dest: 'uploads/' });
 
 // ✅ Функция загрузки base64-изображения
-async function uploadImage(base64Data, fileName) {
-  const buffer = Buffer.from(base64Data, 'base64');
-
-  const params = {
+async function uploadToS3(buffer, fileName, contentType) {
+  await s3.send(new PutObjectCommand({
     Bucket: BUCKET_NAME,
     Key: fileName,
     Body: buffer,
-    ContentEncoding: 'base64',
-    ContentType: 'image/jpeg',
+    ContentType: contentType,
     ACL: 'public-read'
-  };
-
-  const data = await s3.upload(params).promise();
-  return data.Location;
+  }));
+  return `https://storage.yandexcloud.net/${BUCKET_NAME}/${fileName}`;
 }
+
+async function deleteFromS3(urls) {
+  const keys = urls
+    .map(url => {
+      const key = url.split(`${BUCKET_NAME}/`)[1];
+      return key ? { Key: key } : null;
+    })
+    .filter(Boolean);
+
+  if (keys.length > 0) {
+    await s3.send(new DeleteObjectsCommand({
+      Bucket: BUCKET_NAME,
+      Delete: { Objects: keys }
+    }));
+  }
+}
+
 
 // ===== Удаление пользователя/ребёнка =====
 app.post('/deleteUserByName', async (req, res) => {
@@ -205,89 +226,146 @@ app.post("/update-user", async (req, res) => {
   }
 });
 
-// ===== Загрузка файла (через multipart/form-data) =====
-app.post('/upload', upload.single('file'), (req, res) => {
-  if (!req.file) return res.status(400).send('Файл не загружен');
-
-  const fileContent = fs.readFileSync(req.file.path);
-  const fileName = Date.now() + '-' + path.basename(req.file.originalname);
-
-  const params = {
-    Bucket: BUCKET_NAME,
-    Key: fileName,
-    Body: fileContent,
-    ContentType: req.file.mimetype,
-    ACL: 'public-read'
-  };
-
-  s3.upload(params, (err, data) => {
-    fs.unlinkSync(req.file.path);
-    if (err) return res.status(500).send('Ошибка загрузки файла');
-    res.json({ url: data.Location });
-  });
-});
 
 // ===== Добавление новости =====
-app.post('/addNews', async (req, res) => {
+app.post('/addNews', upload.fields([
+  { name: 'images', maxCount: 5 },
+  { name: 'video', maxCount: 1 }
+]), async (req, res) => {
   try {
-    const { title, description, groupId, authorId, imageBase64 } = req.body;
+    const { title, description, groupId, authorId } = req.body;
+    const images = req.files['images'] || [];
+    const video = req.files['video']?.[0];
+
+    if (!title || !description || !groupId || !authorId) {
+      return res.status(400).json({ error: 'Обязательные поля отсутствуют' });
+    }
+
+    if (images.length === 0 || images.length > 5) {
+      return res.status(400).json({ error: 'Разрешено от 1 до 5 изображений' });
+    }
 
     const newsId = uuidv4();
-    const fileName = `${newsId}.jpg`;
-    const imageUrl = await uploadImage(imageBase64, fileName);
     const timestamp = Date.now();
 
-    await db.ref(`news/${groupId}/${newsId}`).set({
+    const imageUrls = await Promise.all(images.map((file, index) => {
+      const ext = path.extname(file.originalname);
+      const fileName = `${newsId}_${index}${ext}`;
+      return uploadToS3(file.buffer, fileName, file.mimetype);
+    }));
+
+    let videoUrl = null;
+    if (video) {
+      const ext = path.extname(video.originalname);
+      const fileName = `${newsId}_video${ext}`;
+      videoUrl = await uploadToS3(video.buffer, fileName, video.mimetype);
+    }
+
+    const newsData = {
       title,
       description,
-      imageUrl,
+      imageUrls,
       timestamp,
       authorId
-    });
+    };
+    if (videoUrl) newsData.videoUrl = videoUrl;
 
-    res.status(200).json({ success: true, newsId });
+    await db.ref(`news/${groupId}/${newsId}`).set(newsData);
+
+    res.status(200).json({ success: true, newsId, imageUrls, videoUrl });
   } catch (error) {
     console.error('Ошибка при добавлении новости:', error);
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-app.get('/news/:groupId', async (req, res) => {
-  try {
-    const { groupId } = req.params;
-    const newsSnapshot = await db.ref(`news/${groupId}`).orderByChild('timestamp').once('value');
-    const news = newsSnapshot.val() || {};
-
-    // Можно отсортировать по времени (последние сверху)
-    const sortedNews = Object.entries(news)
-      .sort(([, a], [, b]) => b.timestamp - a.timestamp)
-      .map(([id, item]) => ({ id, ...item }));
-
-    res.json(sortedNews);
-  } catch (error) {
-    console.error('Ошибка при получении новостей:', error);
     res.status(500).json({ error: error.message });
   }
 });
 
+
+// ===== Редактирование новости =====
+app.post('/editNews', upload.fields([
+  { name: 'newImages', maxCount: 5 },
+  { name: 'video', maxCount: 1 }
+]), async (req, res) => {
+  try {
+    const { groupId, newsId, authorId, title, description } = req.body;
+    const imagesToKeep = JSON.parse(req.body.imagesToKeep || '[]');
+
+    const newImages = req.files['newImages'] || [];
+    const videoFile = req.files['video']?.[0];
+
+    if (!groupId || !newsId || !authorId) {
+      return res.status(400).json({ error: 'groupId, newsId и authorId обязательны' });
+    }
+
+    const ref = db.ref(`news/${groupId}/${newsId}`);
+    const snapshot = await ref.once('value');
+    const existing = snapshot.val();
+
+    if (!existing) return res.status(404).json({ error: 'Новость не найдена' });
+    if (existing.authorId !== authorId) return res.status(403).json({ error: 'Нет прав на редактирование' });
+
+    const deletedImages = (existing.imageUrls || []).filter(url => !imagesToKeep.includes(url));
+    await deleteFromS3(deletedImages);
+
+    const newImageUrls = await Promise.all(newImages.map((file, index) => {
+      const ext = path.extname(file.originalname);
+      const fileName = `${newsId}_new_${index}${ext}`;
+      return uploadToS3(file.buffer, fileName, file.mimetype);
+    }));
+
+    let videoUrl = existing.videoUrl || null;
+    if (videoFile) {
+      if (videoUrl) await deleteFromS3([videoUrl]);
+      const ext = path.extname(videoFile.originalname);
+      const fileName = `${newsId}_video${ext}`;
+      videoUrl = await uploadToS3(videoFile.buffer, fileName, videoFile.mimetype);
+    } else if (!req.body.video && videoUrl) {
+      await deleteFromS3([videoUrl]);
+      videoUrl = null;
+    }
+
+    const updated = {
+      title: title || existing.title,
+      description: description || existing.description,
+      imageUrls: [...imagesToKeep, ...newImageUrls],
+      timestamp: Date.now(),
+      authorId
+    };
+    if (videoUrl) updated.videoUrl = videoUrl;
+
+    await ref.update(updated);
+    res.status(200).json({ success: true, newsId, imageUrls: updated.imageUrls, videoUrl });
+
+  } catch (error) {
+    console.error('Ошибка при редактировании:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+
+
 // ===== Удаление новости =====
-app.post('/deleteNews', async (req, res) => {
+app.post('/deleteNews', express.json(), async (req, res) => {
   try {
     const { groupId, newsId, authorId } = req.body;
-    const newsRef = db.ref(`news/${groupId}/${newsId}`);
-    const snapshot = await newsRef.once('value');
-    const news = snapshot.val();
 
-    if (!news) return res.status(404).json({ error: 'Новость не найдена' });
-    if (news.authorId !== authorId) return res.status(403).json({ error: 'Нет прав на удаление' });
+    const ref = db.ref(`news/${groupId}/${newsId}`);
+    const snapshot = await ref.once('value');
+    const data = snapshot.val();
 
-    await newsRef.remove();
+    if (!data) return res.status(404).json({ error: 'Новость не найдена' });
+    if (data.authorId !== authorId) return res.status(403).json({ error: 'Нет прав на удаление' });
+
+    const urls = [...(data.imageUrls || []), data.videoUrl].filter(Boolean);
+    await deleteFromS3(urls);
+    await ref.remove();
+
     res.status(200).json({ success: true });
   } catch (error) {
     console.error('Ошибка при удалении новости:', error);
-    res.status(500).json({ success: false, error: error.message });
+    res.status(500).json({ error: error.message });
   }
 });
+
 
 // ===== Проверка сервера =====
 app.get("/", (req, res) => {
