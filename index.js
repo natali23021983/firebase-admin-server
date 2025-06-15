@@ -241,9 +241,14 @@ app.post('/addNews', upload.fields([
       return res.status(400).json({ error: 'Обязательные поля отсутствуют' });
     }
 
-    if (images.length === 0 || images.length > 5) {
-      return res.status(400).json({ error: 'Разрешено от 1 до 5 изображений' });
+    if (images.length === 0 && !video) {
+      return res.status(400).json({ error: 'Нужно хотя бы одно изображение или видео' });
     }
+
+    if (images.length > 5) {
+      return res.status(400).json({ error: 'Максимум 5 изображений' });
+    }
+
 
     const newsId = uuidv4();
     const timestamp = Date.now();
