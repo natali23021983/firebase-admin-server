@@ -405,13 +405,14 @@ app.post('/generate-upload-url', verifyToken, async (req, res) => {
       Bucket: BUCKET_NAME,
       Key: key,
       ContentType: fileType,
-      Expires: 300
     };
 
     const command = new PutObjectCommand(signedUrlParams);
 
     console.log('Вызов getSignedUrl...');
+
     const uploadUrl = await getSignedUrl(s3, command, { expiresIn: 300 });
+
     console.log('Signed URL получен:', uploadUrl);
 
     const fileUrl = `https://${BUCKET_NAME}.storage.yandexcloud.net/${key}`;
