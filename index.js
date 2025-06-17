@@ -46,17 +46,23 @@ console.log("BUCKET_NAME:", process.env.YC_S3_BUCKET);
 async function verifyToken(req, res, next) {
   const authHeader = req.headers.authorization || "";
   const token = authHeader.startsWith("Bearer ") ? authHeader.split("Bearer ")[1] : null;
-  if (!token) return res.status(401).send("Нет токена");
+
+  if (!token) {
+    console.warn("🚫 verifyToken: отсутствует заголовок Authorization");
+    return res.status(401).send("Нет токена");
+  }
 
   try {
     const decoded = await admin.auth().verifyIdToken(token);
     req.user = decoded;
+    console.log("✅ verifyToken: токен валиден, uid:", decoded.uid);
     next();
   } catch (err) {
-    console.error("Ошибка в verifyToken:", err);
+    console.error("❌ verifyToken: токен недействителен или истёк", err);
     res.status(403).send("Неверный токен");
   }
 }
+
 
 // === Утилиты S3-загрузки/удаления ===
 async function uploadToS3(buffer, fileName, contentType) {
