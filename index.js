@@ -38,7 +38,8 @@ const s3 = new S3Client({
   },
 });
 const BUCKET_NAME = process.env.YC_S3_BUCKET;
-console.log("BUCKET_NAME:", process.env.BUCKET_NAME);
+console.log("BUCKET_NAME:", process.env.YC_S3_BUCKET);
+
 
 
 // === Middleware проверки Firebase-токена ===
