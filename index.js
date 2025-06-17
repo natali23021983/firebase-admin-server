@@ -369,6 +369,38 @@ app.post("/deleteNews", verifyToken, async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+// === Генерация signed URL для прямой загрузки в S3 ===
+app.post('/generate-upload-url', verifyToken, async (req, res) => {
+  try {
+    const { fileName, fileType, groupId } = req.body;
+
+    if (!fileName || !fileType || !groupId) {
+      return res.status(400).json({ error: "fileName, fileType и groupId обязательны" });
+    }
+
+    const key = `news/${groupId}/${Date.now()}_${fileName}`;
+    const signedUrlParams = {
+      Bucket: BUCKET_NAME,
+      Key: key,
+      ContentType: fileType,
+      Expires: 300, // 5 минут
+      ACL: 'public-read'
+    };
+
+    const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
+    const { PutObjectCommand } = require("@aws-sdk/client-s3");
+
+    const command = new PutObjectCommand(signedUrlParams);
+    const uploadUrl = await getSignedUrl(s3, command, { expiresIn: 300 });
+
+    const fileUrl = `https://${BUCKET_NAME}.storage.yandexcloud.net/${key}`;
+
+    res.json({ uploadUrl, fileUrl });
+  } catch (err) {
+    console.error("Ошибка генерации upload URL:", err);
+    res.status(500).json({ error: "Ошибка сервера" });
+  }
+});
 
 // === Проверка сервера ===
 app.get("/", (req, res) => res.send("Server is running"));
