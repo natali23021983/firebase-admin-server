@@ -319,44 +319,74 @@ app.post("/news", verifyToken, upload.fields([
   }
 });
 
-// === Получение списка новостей по groupId ===
-app.get("/news", verifyToken, async (req, res) => {
+app.post("/news", verifyToken, async (req, res) => {
+  console.log("📩 /news endpoint hit");
+
   try {
-    const groupId = req.query.groupId;
-    if (!groupId) {
-      return res.status(400).json({ error: "groupId обязателен" });
+    const { groupId, newsId, title, description, authorId, images, video } = req.body;
+    console.log("🧾 Body:", req.body);
+    console.log("👤 Author ID:", authorId);
+
+    if (!groupId || !title || !description || !authorId) {
+      return res.status(400).json({ error: "Обязательные поля: groupId, title, description, authorId" });
     }
 
-    const snap = await db.ref(`news/${groupId}`).once("value");
-    const newsData = snap.val() || {};
+    const isEdit = Boolean(newsId);
+    const targetNewsId = isEdit ? newsId : uuidv4();
+    const timestamp = Date.now();
 
-    // Преобразуем под структуру NewsItem
-    const newsList = Object.entries(newsData).map(([id, news]) => {
-      const mediaUrls = [
-        ...(news.imageUrls || []),
-        ...(news.videoUrl ? [news.videoUrl] : [])
-      ];
+    let existing = null;
+    if (isEdit) {
+      const snap = await db.ref(`news/${groupId}/${targetNewsId}`).once("value");
+      existing = snap.val();
 
-      return {
-        id,  // заменили newsId → id
-        title: news.title,
-        description: news.description,
-        groupId: groupId,
-        authorId: news.authorId,
-        mediaUrls,  // универсальное поле
-        timestamp: news.timestamp || 0  // можно сохранить, если надо сортировать
-      };
+      if (!existing) {
+        return res.status(404).json({ error: "Новость не найдена" });
+      }
+      if (existing.authorId !== authorId) {
+        return res.status(403).json({ error: "Нет прав на редактирование" });
+      }
+
+      // Удаляем старые медиа, которых нет в новых
+      const oldMedia = [...(existing.imageUrls || []), existing.videoUrl].filter(Boolean);
+      const keepMedia = [...(images || []), video].filter(Boolean);
+      const toDelete = oldMedia.filter(url => !keepMedia.includes(url));
+      if (toDelete.length) {
+        console.log("🗑 Удаление из S3:", toDelete);
+        await deleteFromS3(toDelete);
+      }
+    }
+
+    // Финальный объект
+    const newsData = {
+      title,
+      description,
+      authorId,
+      timestamp,
+      imageUrls: images || [],
+    };
+
+    if (video) {
+      newsData.videoUrl = video;
+    }
+
+    await db.ref(`news/${groupId}/${targetNewsId}`).set(newsData);
+
+    console.log("✅ Новость успешно сохранена");
+
+    res.status(isEdit ? 200 : 201).json({
+      success: true,
+      newsId: targetNewsId,
+      imageUrls: newsData.imageUrls,
+      videoUrl: newsData.videoUrl || null
     });
 
-    // Сортировка по убыванию даты
-    newsList.sort((a, b) => b.timestamp - a.timestamp);
-
-    res.json(newsList);  // теперь сразу возвращаем массив, без обёртки { success, news }
   } catch (err) {
-    console.error("Ошибка GET /news:", err);
+    console.error("❌ Ошибка /news:", err);
     res.status(500).json({ error: err.message });
   }
 });
+
 
 
 // === Удаление новости ===
@@ -409,7 +439,7 @@ app.post('/generate-upload-url', verifyToken, async (req, res) => {
       ContentType: contentType
     };
 
-c   onsole.log('ContentType, который будет передан:', contentType);
+    console.log('ContentType, который будет передан:', contentType);
 
     const command = new PutObjectCommand(signedUrlParams);
 
