@@ -193,8 +193,9 @@ app.post("/update-user", async (req, res) => {
 
 // === Добавление и редактирование новости ===
 app.post("/news", verifyToken, upload.fields([
-  { name: "images", maxCount: 5 },
-  { name: "video", maxCount: 1 },
+  app.post("/news", upload.fields([
+    { name: 'mediaFiles', maxCount: 5 },
+    { name: 'videoFile', maxCount: 1 }
 ]), async (req, res) => {
   console.log("📩 /news endpoint hit");
 
