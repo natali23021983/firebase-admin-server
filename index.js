@@ -209,18 +209,18 @@ app.post("/update-user", async (req, res) => {
   }
 });
 
-
-
+// === Добавление и редактирование новости (через ссылки) ===
 app.post("/news", verifyToken, async (req, res) => {
   console.log("📩 /news endpoint hit");
 
   try {
-    const { groupId, newsId, title, description, authorId, images, video } = req.body;
+    const { groupId, newsId, title, description, images, video } = req.body;
+    const authorId = req.user.uid;
     console.log("🧾 Body:", req.body);
     console.log("👤 Author ID:", authorId);
 
-    if (!groupId || !title || !description || !authorId) {
-      return res.status(400).json({ error: "Обязательные поля: groupId, title, description, authorId" });
+    if (!groupId || !title || !description) {
+      return res.status(400).json({ error: "Обязательные поля: groupId, title и description" });
     }
 
     const isEdit = Boolean(newsId);
@@ -239,7 +239,7 @@ app.post("/news", verifyToken, async (req, res) => {
         return res.status(403).json({ error: "Нет прав на редактирование" });
       }
 
-      // Удаляем старые медиа, которых нет в новых
+      // === Удаление старых медиа, которых нет в новых ===
       const oldMedia = [...(existing.imageUrls || []), existing.videoUrl].filter(Boolean);
       const keepMedia = [...(images || []), video].filter(Boolean);
       const toDelete = oldMedia.filter(url => !keepMedia.includes(url));
@@ -249,10 +249,11 @@ app.post("/news", verifyToken, async (req, res) => {
       }
     }
 
-    // Финальный объект
+    // === Сохраняем новость ===
     const newsData = {
       title,
       description,
+      groupId,
       authorId,
       timestamp,
       imageUrls: images || [],
@@ -278,6 +279,46 @@ app.post("/news", verifyToken, async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+// === Получение списка новостей по groupId ===
+app.get("/news", verifyToken, async (req, res) => {
+  try {
+    const groupId = req.query.groupId;
+    if (!groupId) {
+      return res.status(400).json({ error: "groupId обязателен" });
+    }
+
+    const snap = await db.ref(`news/${groupId}`).once("value");
+    const newsData = snap.val() || {};
+
+    // Преобразуем под структуру NewsItem
+    const newsList = Object.entries(newsData).map(([id, news]) => {
+      const mediaUrls = [
+        ...(news.imageUrls || []),
+        ...(news.videoUrl ? [news.videoUrl] : [])
+      ];
+
+      return {
+        id,  // заменили newsId → id
+        title: news.title,
+        description: news.description,
+        groupId: groupId,
+        authorId: news.authorId,
+        mediaUrls,  // универсальное поле
+        timestamp: news.timestamp || 0  // можно сохранить, если надо сортировать
+      };
+    });
+
+    // Сортировка по убыванию даты
+    newsList.sort((a, b) => b.timestamp - a.timestamp);
+
+    res.json(newsList);  // теперь сразу возвращаем массив, без обёртки { success, news }
+  } catch (err) {
+    console.error("Ошибка GET /news:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 
 
 
