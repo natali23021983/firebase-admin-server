@@ -3,51 +3,59 @@ const express = require('express');
 const cors = require("cors");
 const admin = require('firebase-admin');
 const multer = require('multer');
-const { v4: uuidv4 } = require('uuid'); // ✅ импорт uuid
-const { S3Client, PutObjectCommand, DeleteObjectCommand } = require("@aws-sdk/client-s3");
+const { v4: uuidv4 } = require('uuid');
+const { S3Client, PutObjectCommand, DeleteObjectCommand, DeleteObjectsCommand } = require("@aws-sdk/client-s3");
 const bodyParser = require("body-parser");
 const path = require('path');
 
 const app = express();
 app.use(cors());
+app.use(bodyParser.json());
 
+// Multer для загрузки в память
 const upload = multer({ storage: multer.memoryStorage() });
 
-admin.initializeApp({
-  credential: admin.credential.cert(require("./serviceAccountKey.json")),
-  databaseURL: process.env.FIREBASE_DATABASE_URL,
-});
-
-// ===== Firebase Admin SDK =====
+// === Firebase Admin SDK ===
 const base64 = process.env.FIREBASE_CONFIG;
-if (!base64) {
-  throw new Error("FIREBASE_CONFIG переменная не найдена в .env");
-}
-const decoded = Buffer.from(base64, 'base64').toString('utf8');
-const serviceAccount = JSON.parse(decoded);
+if (!base64) throw new Error("FIREBASE_CONFIG переменная не найдена в .env");
+const serviceAccount = JSON.parse(Buffer.from(base64, 'base64').toString('utf8'));
 
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
-  databaseURL: "https://teremok-1a3ff-default-rtdb.firebaseio.com"
+  databaseURL: process.env.FIREBASE_DB_URL
 });
 
 const db = admin.database();
 const auth = admin.auth();
 
-// ===== S3 (Yandex Cloud) =====
+// === Яндекс S3 ===
 const s3 = new S3Client({
-  region: "ru-central1",
-  endpoint: "https://storage.yandexcloud.net",
+  region: process.env.YC_S3_REGION || "ru-central1",
+  endpoint: process.env.YC_S3_ENDPOINT || "https://storage.yandexcloud.net",
   credentials: {
     accessKeyId: process.env.YC_ACCESS_KEY_ID,
     secretAccessKey: process.env.YC_SECRET_ACCESS_KEY,
   },
 });
+const BUCKET_NAME = process.env.YC_S3_BUCKET;
 
-const BUCKET_NAME = 'teremok';
-const upload = multer({ dest: 'uploads/' });
+// === Middleware проверки Firebase-токена ===
+async function verifyToken(req, res, next) {
+  const authHeader = req.headers.authorization || "";
+  const token = authHeader.startsWith("Bearer ") ? authHeader.split("Bearer ")[1] : null;
+  if (!token) return res.status(401).send("Нет токена");
 
-// ✅ Функция загрузки base64-изображения
+  try {
+    const decoded = await admin.auth().verifyIdToken(token);
+    req.user = decoded;
+    next();
+  } catch (err) {
+    console.error("Ошибка в verifyToken:", err);
+    res.status(403).send("Неверный токен");
+  }
+}
+
+// === Утилиты S3-загрузки/удаления ===
 async function uploadToS3(buffer, fileName, contentType) {
   await s3.send(new PutObjectCommand({
     Bucket: BUCKET_NAME,
@@ -56,112 +64,88 @@ async function uploadToS3(buffer, fileName, contentType) {
     ContentType: contentType,
     ACL: 'public-read'
   }));
-  return `https://storage.yandexcloud.net/${BUCKET_NAME}/${fileName}`;
+  return `https://${BUCKET_NAME}.storage.yandexcloud.net/${fileName}`;
 }
 
 async function deleteFromS3(urls) {
-  const keys = urls
-    .map(url => {
-      const key = url.split(`${BUCKET_NAME}/`)[1];
-      return key ? { Key: key } : null;
-    })
-    .filter(Boolean);
+  const keys = urls.map(url => {
+    const parts = url.split(`${BUCKET_NAME}/`);
+    return parts[1] ? { Key: parts[1] } : null;
+  }).filter(Boolean);
 
-  if (keys.length > 0) {
-    await s3.send(new DeleteObjectsCommand({
-      Bucket: BUCKET_NAME,
-      Delete: { Objects: keys }
-    }));
-  }
+  if (keys.length === 0) return;
+  await s3.send(new DeleteObjectsCommand({
+    Bucket: BUCKET_NAME,
+    Delete: { Objects: keys }
+  }));
 }
 
-
-// ===== Удаление пользователя/ребёнка =====
+// === Удаление пользователя/ребёнка ===
 app.post('/deleteUserByName', async (req, res) => {
-  const fullName = req.body.fullName;
+  const fullName = req.body.fullName?.trim().toLowerCase();
   if (!fullName) return res.status(400).send("fullName обязателен");
 
   try {
-    const usersSnapshot = await db.ref('users').once('value');
-    const users = usersSnapshot.val();
+    const usersSnap = await db.ref('users').once('value');
+    const users = usersSnap.val() || {};
 
-    let found = false;
+    for (const [userId, user] of Object.entries(users)) {
+      const name = user.name?.trim().toLowerCase();
+      const role = user.role?.trim().toLowerCase();
 
-    for (const userId in users) {
-      const user = users[userId];
-
-      // === Родитель ===
-      if (
-        user.name?.trim().toLowerCase() === fullName.trim().toLowerCase() &&
-        user.role?.trim().toLowerCase() === 'родитель'
-      ) {
-        found = true;
-
+      // Родитель
+      if (name === fullName && role === 'родитель') {
         if (user.children) {
-          for (const childId in user.children) {
-            const child = user.children[childId];
+          for (const child of Object.values(user.children)) {
             const groupId = child.group;
             if (groupId) {
-              const groupChildrenRef = db.ref(`groups/${groupId}/children`);
-              const groupChildrenSnap = await groupChildrenRef.once('value');
-              const groupChildren = groupChildrenSnap.val();
-
-              for (const gcId in groupChildren) {
-                if (groupChildren[gcId] === child.fullName) {
-                  await groupChildrenRef.child(gcId).remove();
+              const gcRef = db.ref(`groups/${groupId}/children`);
+              const gcSnap = await gcRef.once('value');
+              const gc = gcSnap.val() || {};
+              for (const [gcId, full] of Object.entries(gc)) {
+                if (full === child.fullName) {
+                  await gcRef.child(gcId).remove();
                   break;
                 }
               }
             }
           }
         }
-
         await db.ref(`users/${userId}`).remove();
         await auth.deleteUser(userId);
         return res.send("Родитель и его дети удалены.");
       }
 
-      // === Педагог ===
-      if (
-        user.name?.trim().toLowerCase() === fullName.trim().toLowerCase() &&
-        user.role?.trim().toLowerCase() === 'педагог'
-      ) {
-        found = true;
-
-        const groupsSnapshot = await db.ref('groups').once('value');
-        const groups = groupsSnapshot.val();
-
-        for (const groupId in groups) {
-          if (groups[groupId].teachers?.[userId]) {
+      // Педагог
+      if (name === fullName && role === 'педагог') {
+        const groupsSnap = await db.ref('groups').once('value');
+        const groups = groupsSnap.val() || {};
+        for (const [groupId, group] of Object.entries(groups)) {
+          if (group.teachers?.[userId]) {
             await db.ref(`groups/${groupId}/teachers/${userId}`).remove();
           }
         }
-
         await db.ref(`users/${userId}`).remove();
         await auth.deleteUser(userId);
         return res.send("Педагог удалён.");
       }
 
-      // === Ребёнок ===
+      // Ребёнок
       if (user.children) {
-        for (const childId in user.children) {
-          const child = user.children[childId];
-          if (child.fullName?.trim().toLowerCase() === fullName.trim().toLowerCase()) {
-            found = true;
-
-            if (child.group) {
-              const groupChildrenRef = db.ref(`groups/${child.group}/children`);
-              const groupChildrenSnap = await groupChildrenRef.once('value');
-              const groupChildren = groupChildrenSnap.val();
-
-              for (const gcId in groupChildren) {
-                if (groupChildren[gcId] === child.fullName) {
-                  await groupChildrenRef.child(gcId).remove();
+        for (const [childId, child] of Object.entries(user.children)) {
+          if (child.fullName?.trim().toLowerCase() === fullName) {
+            const groupId = child.group;
+            if (groupId) {
+              const gcRef = db.ref(`groups/${groupId}/children`);
+              const gcSnap = await gcRef.once('value');
+              const gc = gcSnap.val() || {};
+              for (const [gcId, full] of Object.entries(gc)) {
+                if (full === child.fullName) {
+                  await gcRef.child(gcId).remove();
                   break;
                 }
               }
             }
-
             await db.ref(`users/${userId}/children/${childId}`).remove();
             return res.send("Ребёнок удалён.");
           }
@@ -169,215 +153,155 @@ app.post('/deleteUserByName', async (req, res) => {
       }
     }
 
-    if (!found) {
-      return res.status(404).send("Пользователь не найден.");
-    }
-
-  } catch (error) {
-    console.error("Ошибка при удалении пользователя:", error);
-    return res.status(500).send("Ошибка при удалении.");
+    res.status(404).send("Пользователь не найден.");
+  } catch (err) {
+    console.error("Ошибка при deleteUserByName:", err);
+    res.status(500).send("Ошибка при удалении.");
   }
 });
 
-// ===== Обновление Email =====
+// === Обновление email ===
 app.post("/update-user", async (req, res) => {
   try {
     const { fullName, newEmail } = req.body;
+    if (!fullName || !newEmail) return res.status(400).json({ error: "fullName и newEmail обязательны" });
 
-    if (!fullName || !newEmail) {
-      return res.status(400).json({ error: "fullName и newEmail обязательны" });
-    }
+    const snap = await db.ref("users").orderByChild("name").equalTo(fullName).once("value");
+    if (!snap.exists()) return res.status(404).json({ error: "Пользователь не найден" });
 
-    const snapshot = await db.ref("users").orderByChild("name").equalTo(fullName).once("value");
-
-    if (!snapshot.exists()) {
-      return res.status(404).json({ error: "Пользователь не найден" });
-    }
-
-    const users = snapshot.val();
+    const users = snap.val();
     const keys = Object.keys(users);
-
-    if (keys.length > 1) {
-      return res.status(400).json({ error: "Найдено несколько пользователей с таким именем" });
-    }
+    if (keys.length > 1) return res.status(400).json({ error: "Найдено несколько пользователей с таким именем" });
 
     const userKey = keys[0];
-    const userData = users[userKey];
-    const userId = userData.userId;
-
-    if (!userId) {
-      return res.status(400).json({ error: "userId не найден в базе" });
-    }
+    const user = users[userKey];
+    const userId = user.userId;
+    if (!userId) return res.status(400).json({ error: "userId не найден в базе" });
 
     await auth.updateUser(userId, { email: newEmail });
     await db.ref(`users/${userKey}`).update({ email: newEmail });
 
-    return res.json({
-      message: "Email обновлен в базе и авторизации",
-      userId,
-      updatedUser: { name: fullName, email: newEmail }
-    });
-
-  } catch (error) {
-    if (error.code === 'auth/email-already-exists') {
-      return res.status(400).json({ error: "Такой email уже используется другим аккаунтом" });
+    res.json({ message: "Email обновлен", userId, updatedUser: { name: fullName, email: newEmail } });
+  } catch (err) {
+    if (err.code === 'auth/email-already-exists') {
+      return res.status(400).json({ error: "Email уже используется" });
     }
-    return res.status(500).json({ error: "Ошибка сервера: " + error.message });
+    console.error("Ошибка update-user:", err);
+    res.status(500).json({ error: "Ошибка сервера: " + err.message });
   }
 });
 
-
-// ===== Добавление новости =====
-app.post('/addNews', upload.fields([
-  { name: 'images', maxCount: 5 },
-  { name: 'video', maxCount: 1 }
+// === Добавление и редактирование новости ===
+app.post("/news", verifyToken, upload.fields([
+  { name: "images", maxCount: 5 },
+  { name: "video", maxCount: 1 },
 ]), async (req, res) => {
   try {
-    const { title, description, groupId, authorId } = req.body;
-    const images = req.files['images'] || [];
-    const video = req.files['video']?.[0];
+    const { groupId, newsId, title, description } = req.body;
+    const authorId = req.user.uid;
 
-    if (!title || !description || !groupId || !authorId) {
-      return res.status(400).json({ error: 'Обязательные поля отсутствуют' });
+    if (!groupId || !title || !description) {
+      return res.status(400).json({ error: "groupId, title и description обязательны" });
     }
 
-    if (images.length === 0 && !video) {
-      return res.status(400).json({ error: 'Нужно хотя бы одно изображение или видео' });
-    }
-
-    if (images.length > 5) {
-      return res.status(400).json({ error: 'Максимум 5 изображений' });
-    }
-
-
-    const newsId = uuidv4();
+    const isEdit = Boolean(newsId);
+    const targetNewsId = isEdit ? newsId : uuidv4();
     const timestamp = Date.now();
 
-    const imageUrls = await Promise.all(images.map((file, index) => {
-      const ext = path.extname(file.originalname);
-      const fileName = `${newsId}_${index}${ext}`;
-      return uploadToS3(file.buffer, fileName, file.mimetype);
-    }));
+    const imagesToKeep = isEdit ? JSON.parse(req.body.imagesToKeep || '[]') : [];
 
-    let videoUrl = null;
-    if (video) {
-      const ext = path.extname(video.originalname);
-      const fileName = `${newsId}_video${ext}`;
-      videoUrl = await uploadToS3(video.buffer, fileName, video.mimetype);
+    const existingSnap = isEdit
+      ? await db.ref(`news/${groupId}/${targetNewsId}`).once('value')
+      : null;
+    const existing = existingSnap?.val();
+
+    if (isEdit) {
+      if (!existing) return res.status(404).json({ error: "Новость не найдена" });
+      if (existing.authorId !== authorId) return res.status(403).json({ error: "Нет прав" });
     }
 
-    const newsData = {
-      title,
-      description,
-      imageUrls,
-      timestamp,
-      authorId
-    };
+    // Удаляем отклонённые изображения и видео
+    if (isEdit) {
+      const toDelete = (existing.imageUrls || [])
+        .filter(u => !imagesToKeep.includes(u));
+      if (req.body.replaceVideo === 'true' && existing.videoUrl) {
+        toDelete.push(existing.videoUrl);
+      }
+      await deleteFromS3(toDelete);
+    }
+
+    const newImageUrls = (req.files.images || []).map((file, i) => {
+      const ext = path.extname(file.originalname);
+      const fileName = `news/${groupId}/${targetNewsId}_img_${uuidv4()}${ext}`;
+      return uploadToS3(file.buffer, fileName, file.mimetype);
+    });
+    const resolvedImgs = await Promise.all(newImageUrls);
+
+    // Работа с видео
+    let videoUrl = isEdit && existing.videoUrl;
+    if (req.files.video && req.files.video[0]) {
+      if (videoUrl) {
+        await deleteFromS3([videoUrl]);
+      }
+      const file = req.files.video[0];
+      const ext = path.extname(file.originalname);
+      const fileName = `news/${groupId}/${targetNewsId}_vid_${uuidv4()}${ext}`;
+      videoUrl = await uploadToS3(file.buffer, fileName, file.mimetype);
+    } else if (isEdit && req.body.replaceVideo === 'false') {
+      if (videoUrl) {
+        await deleteFromS3([videoUrl]);
+        videoUrl = null;
+      }
+    }
+
+    const imageUrls = isEdit ? [...imagesToKeep, ...resolvedImgs] : resolvedImgs;
+
+    const newsData = { title, description, imageUrls, timestamp, authorId };
     if (videoUrl) newsData.videoUrl = videoUrl;
 
-    await db.ref(`news/${groupId}/${newsId}`).set(newsData);
+    await db.ref(`news/${groupId}/${targetNewsId}`).set(newsData);
 
-    res.status(200).json({ success: true, newsId, imageUrls, videoUrl });
-  } catch (error) {
-    console.error('Ошибка при добавлении новости:', error);
-    res.status(500).json({ error: error.message });
+    res.status(isEdit ? 200 : 201).json({
+      success: true,
+      newsId: targetNewsId,
+      imageUrls,
+      videoUrl: videoUrl || null
+    });
+
+  } catch (err) {
+    console.error("Ошибка /news:", err);
+    res.status(500).json({ error: err.message });
   }
 });
 
-
-// ===== Редактирование новости =====
-app.post('/editNews', upload.fields([
-  { name: 'newImages', maxCount: 5 },
-  { name: 'video', maxCount: 1 }
-]), async (req, res) => {
+// === Удаление новости ===
+app.post("/deleteNews", verifyToken, async (req, res) => {
   try {
-    const { groupId, newsId, authorId, title, description } = req.body;
-    const imagesToKeep = JSON.parse(req.body.imagesToKeep || '[]');
+    const { groupId, newsId } = req.body;
+    const authorId = req.user.uid;
 
-    const newImages = req.files['newImages'] || [];
-    const videoFile = req.files['video']?.[0];
-
-    if (!groupId || !newsId || !authorId) {
-      return res.status(400).json({ error: 'groupId, newsId и authorId обязательны' });
+    if (!groupId || !newsId) {
+      return res.status(400).json({ error: "groupId и newsId обязательны" });
     }
 
-    const ref = db.ref(`news/${groupId}/${newsId}`);
-    const snapshot = await ref.once('value');
-    const existing = snapshot.val();
-
-    if (!existing) return res.status(404).json({ error: 'Новость не найдена' });
-    if (existing.authorId !== authorId) return res.status(403).json({ error: 'Нет прав на редактирование' });
-
-    const deletedImages = (existing.imageUrls || []).filter(url => !imagesToKeep.includes(url));
-    await deleteFromS3(deletedImages);
-
-    const newImageUrls = await Promise.all(newImages.map((file, index) => {
-      const ext = path.extname(file.originalname);
-      const fileName = `${newsId}_new_${index}${ext}`;
-      return uploadToS3(file.buffer, fileName, file.mimetype);
-    }));
-
-    let videoUrl = existing.videoUrl || null;
-    if (videoFile) {
-      if (videoUrl) await deleteFromS3([videoUrl]);
-      const ext = path.extname(videoFile.originalname);
-      const fileName = `${newsId}_video${ext}`;
-      videoUrl = await uploadToS3(videoFile.buffer, fileName, videoFile.mimetype);
-    } else if (!req.body.video && videoUrl) {
-      await deleteFromS3([videoUrl]);
-      videoUrl = null;
-    }
-
-    const updated = {
-      title: title || existing.title,
-      description: description || existing.description,
-      imageUrls: [...imagesToKeep, ...newImageUrls],
-      timestamp: Date.now(),
-      authorId
-    };
-    if (videoUrl) updated.videoUrl = videoUrl;
-
-    await ref.update(updated);
-    res.status(200).json({ success: true, newsId, imageUrls: updated.imageUrls, videoUrl });
-
-  } catch (error) {
-    console.error('Ошибка при редактировании:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-
-
-// ===== Удаление новости =====
-app.post('/deleteNews', express.json(), async (req, res) => {
-  try {
-    const { groupId, newsId, authorId } = req.body;
-
-    const ref = db.ref(`news/${groupId}/${newsId}`);
-    const snapshot = await ref.once('value');
-    const data = snapshot.val();
-
-    if (!data) return res.status(404).json({ error: 'Новость не найдена' });
-    if (data.authorId !== authorId) return res.status(403).json({ error: 'Нет прав на удаление' });
+    const snap = await db.ref(`news/${groupId}/${newsId}`).once('value');
+    const data = snap.val();
+    if (!data) return res.status(404).json({ error: "Новость не найдена" });
+    if (data.authorId !== authorId) return res.status(403).json({ error: "Нет прав" });
 
     const urls = [...(data.imageUrls || []), data.videoUrl].filter(Boolean);
     await deleteFromS3(urls);
-    await ref.remove();
+    await db.ref(`news/${groupId}/${newsId}`).remove();
 
-    res.status(200).json({ success: true });
-  } catch (error) {
-    console.error('Ошибка при удалении новости:', error);
-    res.status(500).json({ error: error.message });
+    res.json({ success: true });
+  } catch (err) {
+    console.error("Ошибка deleteNews:", err);
+    res.status(500).json({ error: err.message });
   }
 });
 
-
-// ===== Проверка сервера =====
-app.get("/", (req, res) => {
-  res.send("Сервер работает");
-});
+// === Проверка сервера ===
+app.get("/", (req, res) => res.send("Server is running"));
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Сервер запущен на порту ${PORT}`);
-});
+app.listen(PORT, () => console.log(`Server started on port ${PORT}`));
