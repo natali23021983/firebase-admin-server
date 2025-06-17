@@ -196,11 +196,16 @@ app.post("/news", verifyToken, upload.fields([
   { name: "images", maxCount: 5 },
   { name: "video", maxCount: 1 },
 ]), async (req, res) => {
+  console.log("📩 /news endpoint hit");
+
   try {
     const { groupId, newsId, title, description } = req.body;
     const authorId = req.user.uid;
+    console.log("🧾 Body:", req.body);
+    console.log("👤 Author ID:", authorId);
 
     if (!groupId || !title || !description) {
+      console.warn("⚠️ Не хватает обязательных полей");
       return res.status(400).json({ error: "groupId, title и description обязательны" });
     }
 
@@ -209,46 +214,64 @@ app.post("/news", verifyToken, upload.fields([
     const timestamp = Date.now();
 
     const imagesToKeep = isEdit ? JSON.parse(req.body.imagesToKeep || '[]') : [];
+    console.log("📷 Images to keep:", imagesToKeep);
 
-    const existingSnap = isEdit
-      ? await db.ref(`news/${groupId}/${targetNewsId}`).once('value')
-      : null;
-    const existing = existingSnap?.val();
-
+    let existing = null;
     if (isEdit) {
-      if (!existing) return res.status(404).json({ error: "Новость не найдена" });
-      if (existing.authorId !== authorId) return res.status(403).json({ error: "Нет прав" });
+      const existingSnap = await db.ref(`news/${groupId}/${targetNewsId}`).once('value');
+      existing = existingSnap.val();
+      console.log("🔎 Существующая новость:", existing);
+
+      if (!existing) {
+        console.warn("🚫 Новость не найдена");
+        return res.status(404).json({ error: "Новость не найдена" });
+      }
+      if (existing.authorId !== authorId) {
+        console.warn("🚫 Нет прав на редактирование");
+        return res.status(403).json({ error: "Нет прав" });
+      }
     }
 
-    // Удаляем отклонённые изображения и видео
+    // === Удаление отклонённых файлов ===
     if (isEdit) {
       const toDelete = (existing.imageUrls || [])
         .filter(u => !imagesToKeep.includes(u));
       if (req.body.replaceVideo === 'true' && existing.videoUrl) {
         toDelete.push(existing.videoUrl);
       }
-      await deleteFromS3(toDelete);
+
+      if (toDelete.length) {
+        console.log("🗑 Удаление файлов из S3:", toDelete);
+        await deleteFromS3(toDelete);
+      }
     }
 
-    const newImageUrls = (req.files.images || []).map((file, i) => {
+    // === Загрузка новых изображений ===
+    const newImageUploads = (req.files.images || []).map((file, i) => {
       const ext = path.extname(file.originalname);
       const fileName = `news/${groupId}/${targetNewsId}_img_${uuidv4()}${ext}`;
+      console.log(`⬆️ Загрузка изображения ${i + 1}: ${fileName}`);
       return uploadToS3(file.buffer, fileName, file.mimetype);
     });
-    const resolvedImgs = await Promise.all(newImageUrls);
 
-    // Работа с видео
+    const resolvedImgs = await Promise.all(newImageUploads);
+    console.log("✅ Загруженные изображения:", resolvedImgs);
+
+    // === Видео ===
     let videoUrl = isEdit && existing.videoUrl;
     if (req.files.video && req.files.video[0]) {
       if (videoUrl) {
+        console.log("🗑 Удаление старого видео:", videoUrl);
         await deleteFromS3([videoUrl]);
       }
       const file = req.files.video[0];
       const ext = path.extname(file.originalname);
       const fileName = `news/${groupId}/${targetNewsId}_vid_${uuidv4()}${ext}`;
+      console.log("⬆️ Загрузка видео:", fileName);
       videoUrl = await uploadToS3(file.buffer, fileName, file.mimetype);
     } else if (isEdit && req.body.replaceVideo === 'false') {
       if (videoUrl) {
+        console.log("🗑 Видео помечено для удаления");
         await deleteFromS3([videoUrl]);
         videoUrl = null;
       }
@@ -259,7 +282,11 @@ app.post("/news", verifyToken, upload.fields([
     const newsData = { title, description, imageUrls, timestamp, authorId };
     if (videoUrl) newsData.videoUrl = videoUrl;
 
+    console.log("📝 Сохраняем новость:", newsData);
+
     await db.ref(`news/${groupId}/${targetNewsId}`).set(newsData);
+
+    console.log("✅ Новость успешно сохранена");
 
     res.status(isEdit ? 200 : 201).json({
       success: true,
@@ -269,10 +296,11 @@ app.post("/news", verifyToken, upload.fields([
     });
 
   } catch (err) {
-    console.error("Ошибка /news:", err);
+    console.error("❌ Ошибка /news:", err);
     res.status(500).json({ error: err.message });
   }
 });
+
 
 // === Удаление новости ===
 app.post("/deleteNews", verifyToken, async (req, res) => {
@@ -304,4 +332,5 @@ app.post("/deleteNews", verifyToken, async (req, res) => {
 app.get("/", (req, res) => res.send("Server is running"));
 
 const PORT = process.env.PORT || 3000;
+console.log(`Запуск сервера на порту ${PORT}`);
 app.listen(PORT, () => console.log(`Server started on port ${PORT}`));
