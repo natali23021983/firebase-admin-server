@@ -16,14 +16,21 @@ app.use(bodyParser.json());
 const upload = multer({ storage: multer.memoryStorage() });
 
 // === Firebase Admin SDK ===
-const base64 = process.env.FIREBASE_CONFIG;
-if (!base64) throw new Error("FIREBASE_CONFIG переменная не найдена в .env");
-const serviceAccount = JSON.parse(Buffer.from(base64, 'base64').toString('utf8'));
+try{
+    const base64 = process.env.FIREBASE_CONFIG;
+    if (!base64) throw new Error("FIREBASE_CONFIG переменная не найдена в .env");
+    const serviceAccount = JSON.parse(Buffer.from(base64, 'base64').toString('utf8'));
 
-admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount),
-  databaseURL: process.env.FIREBASE_DB_URL
-});
+    admin.initializeApp({
+      credential: admin.credential.cert(serviceAccount),
+      databaseURL: process.env.FIREBASE_DB_URL
+    });
+    console.log("✅ Firebase инициализирован");
+
+} catch (err) {
+  console.error("🔥 Ошибка инициализации Firebase:", err);
+}
+
 
 const db = admin.database();
 const auth = admin.auth();
@@ -393,8 +400,13 @@ app.post('/generate-upload-url', verifyToken, async (req, res) => {
       ACL: 'public-read'
     };
 
+    try {
     const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
-    const { PutObjectCommand } = require("@aws-sdk/client-s3");
+    const { PutObjectCommand } = require('@aws-sdk/client-s3');
+    console.log("✅ AWS SDK загружен");
+    } catch (err) {
+    console.error("❌ Ошибка загрузки AWS SDK:", err);
+    }
 
     const command = new PutObjectCommand(signedUrlParams);
     const uploadUrl = await getSignedUrl(s3, command, { expiresIn: 300 });
