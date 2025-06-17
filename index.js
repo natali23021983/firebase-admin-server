@@ -304,6 +304,45 @@ app.post("/news", verifyToken, upload.fields([
   }
 });
 
+// === Получение списка новостей по groupId ===
+app.get("/news", verifyToken, async (req, res) => {
+  try {
+    const groupId = req.query.groupId;
+    if (!groupId) {
+      return res.status(400).json({ error: "groupId обязателен" });
+    }
+
+    const snap = await db.ref(`news/${groupId}`).once("value");
+    const newsData = snap.val() || {};
+
+    // Преобразуем под структуру NewsItem
+    const newsList = Object.entries(newsData).map(([id, news]) => {
+      const mediaUrls = [
+        ...(news.imageUrls || []),
+        ...(news.videoUrl ? [news.videoUrl] : [])
+      ];
+
+      return {
+        id,  // заменили newsId → id
+        title: news.title,
+        description: news.description,
+        groupId: groupId,
+        authorId: news.authorId,
+        mediaUrls,  // универсальное поле
+        timestamp: news.timestamp || 0  // можно сохранить, если надо сортировать
+      };
+    });
+
+    // Сортировка по убыванию даты
+    newsList.sort((a, b) => b.timestamp - a.timestamp);
+
+    res.json(newsList);  // теперь сразу возвращаем массив, без обёртки { success, news }
+  } catch (err) {
+    console.error("Ошибка GET /news:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 
 // === Удаление новости ===
 app.post("/deleteNews", verifyToken, async (req, res) => {
