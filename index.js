@@ -193,9 +193,8 @@ app.post("/update-user", async (req, res) => {
 
 // === Добавление и редактирование новости ===
 app.post("/news", verifyToken, upload.fields([
-  app.post("/news", upload.fields([
-    { name: 'mediaFiles', maxCount: 5 },
-    { name: 'videoFile', maxCount: 1 }
+  { name: 'mediaFiles', maxCount: 5 },
+  { name: 'videoFile', maxCount: 1 }
 ]), async (req, res) => {
   console.log("📩 /news endpoint hit");
 
@@ -248,7 +247,7 @@ app.post("/news", verifyToken, upload.fields([
     }
 
     // === Загрузка новых изображений ===
-    const newImageUploads = (req.files.images || []).map((file, i) => {
+    const newImageUploads = (req.files.mediaFiles || []).map((file, i) => {
       const ext = path.extname(file.originalname);
       const fileName = `news/${groupId}/${targetNewsId}_img_${uuidv4()}${ext}`;
       console.log(`⬆️ Загрузка изображения ${i + 1}: ${fileName}`);
@@ -260,7 +259,7 @@ app.post("/news", verifyToken, upload.fields([
 
     // === Видео ===
     let videoUrl = isEdit && existing.videoUrl;
-    if (req.files.video && req.files.video[0]) {
+    if (req.files.videoFile && req.files.videoFile[0]) {
       if (videoUrl) {
         console.log("🗑 Удаление старого видео:", videoUrl);
         await deleteFromS3([videoUrl]);
