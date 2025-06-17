@@ -401,11 +401,15 @@ app.post('/generate-upload-url', verifyToken, async (req, res) => {
     const key = `news/${groupId}/${Date.now()}_${fileName}`;
     console.log('Генерируем ключ для файла:', key);
 
+    const contentType = String(fileType); // Принудительно строкой
+
     const signedUrlParams = {
       Bucket: BUCKET_NAME,
       Key: key,
-      ContentType: fileType,
+      ContentType: contentType
     };
+
+c   onsole.log('ContentType, который будет передан:', contentType);
 
     const command = new PutObjectCommand(signedUrlParams);
 
