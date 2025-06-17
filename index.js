@@ -7,6 +7,8 @@ const { v4: uuidv4 } = require('uuid');
 const { S3Client, PutObjectCommand, DeleteObjectCommand, DeleteObjectsCommand } = require("@aws-sdk/client-s3");
 const bodyParser = require("body-parser");
 const path = require('path');
+const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
+
 
 const app = express();
 app.use(cors());
@@ -382,6 +384,8 @@ app.post("/deleteNews", verifyToken, async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+
 // === Генерация signed URL для прямой загрузки в S3 ===
 app.post('/generate-upload-url', verifyToken, async (req, res) => {
   console.log('=== /generate-upload-url: запрос получен');
