@@ -264,7 +264,7 @@ app.post("/news", verifyToken, upload.fields([
         console.log("🗑 Удаление старого видео:", videoUrl);
         await deleteFromS3([videoUrl]);
       }
-      const file = req.files.video[0];
+      const file = req.files.videoFile[0]; // ✅ правильное имя поля
       const ext = path.extname(file.originalname);
       const fileName = `news/${groupId}/${targetNewsId}_vid_${uuidv4()}${ext}`;
       console.log("⬆️ Загрузка видео:", fileName);
@@ -278,8 +278,8 @@ app.post("/news", verifyToken, upload.fields([
     }
 
     const imageUrls = isEdit ? [...imagesToKeep, ...resolvedImgs] : resolvedImgs;
-
     const newsData = { title, description, imageUrls, timestamp, authorId };
+
     if (videoUrl) newsData.videoUrl = videoUrl;
 
     console.log("📝 Сохраняем новость:", newsData);
