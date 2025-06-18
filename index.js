@@ -247,27 +247,28 @@ app.post("/news", verifyToken, async (req, res) => {
 
       await ref.update(newData);
       return res.json({ success: true, updated: true });
-    } else {
-      // === Добавление ===
-      const id = uuidv4();
-      const ref = db.ref(`news/${groupId}/${id}`);
+    }  const id = uuidv4();
+        const ref = db.ref(`news/${groupId}/${id}`);
 
-      const media = req.body.mediaUrls || imagesToKeep || [];  // ← подстраховка
-      const imageUrls = media.filter(u => !u.includes(".mp4"));
-      const videoUrl = media.find(u => u.includes(".mp4"));
+        // Явно проверяем, что mediaUrls — массив
+        const media = Array.isArray(req.body.mediaUrls) ? req.body.mediaUrls : [];
 
-      const data = {
-        title,
-        description,
-        imageUrls,
-        timestamp: Date.now(),
-        authorId
-      };
-      if (videoUrl) data.videoUrl = videoUrl;
+        const imageUrls = media.filter(u => !u.includes(".mp4"));
+        const videoUrl = media.find(u => u.includes(".mp4"));
 
-      await ref.set(data);
-      return res.json({ success: true, id });
-    }
+        const data = {
+          title,
+          description,
+          imageUrls,
+          timestamp: Date.now(),
+          authorId
+        };
+        if (videoUrl) data.videoUrl = videoUrl;
+
+        await ref.set(data);
+        return res.json({ success: true, id });
+      }
+
   } catch (err) {
     console.error("Ошибка POST /news:", err);
     res.status(500).json({ error: err.message });
