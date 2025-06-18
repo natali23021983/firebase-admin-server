@@ -328,11 +328,20 @@ app.post("/deleteNews", verifyToken, async (req, res) => {
     const snap = await db.ref(`news/${groupId}/${newsId}`).once('value');
     const data = snap.val();
     if (!data) return res.status(404).json({ error: "Новость не найдена" });
+    console.log("🔍 Проверка авторства:", {
+          authorId,
+          data.authorId,
+          groupId,
+          newsId
+        });
+
     if (data.authorId !== authorId) return res.status(403).json({ error: "Нет прав" });
 
     const urls = [...(data.imageUrls || []), data.videoUrl].filter(Boolean);
     await deleteFromS3(urls);
     await db.ref(`news/${groupId}/${newsId}`).remove();
+
+
 
     res.json({ success: true });
   } catch (err) {
