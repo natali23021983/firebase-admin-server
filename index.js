@@ -210,7 +210,6 @@ app.post("/update-user", async (req, res) => {
 });
 
 // === Добавление и редактирование новости (через ссылки) ===
-const { v4: uuidv4 } = require("uuid");
 
 app.post("/news", verifyToken, async (req, res) => {
   try {
