@@ -209,43 +209,6 @@ app.post("/update-user", async (req, res) => {
   }
 });
 
-// === Добавление и редактирование новости (через ссылки) ===
-
-app.post("/news", verifyToken, async (req, res) => {
-  try {
-    const { title, description, groupId, authorId, mediaUrls } = req.body;
-
-    if (!title || !description || !groupId || !authorId || !Array.isArray(mediaUrls)) {
-      return res.status(400).json({ error: "Обязательные поля: title, description, groupId, authorId, mediaUrls[]" });
-    }
-
-    const images = mediaUrls.filter(url => !url.endsWith(".mp4"));
-    const videoUrl = mediaUrls.find(url => url.endsWith(".mp4"));
-
-    const newsId = uuidv4();
-    const timestamp = Date.now();
-
-    const newsData = {
-      title,
-      description,
-      authorId,
-      timestamp,
-      imageUrls: images,
-    };
-
-    if (videoUrl) {
-      newsData.videoUrl = videoUrl;
-    }
-
-    await db.ref(`news/${groupId}/${newsId}`).set(newsData);
-
-    res.json({ success: true, newsId });
-  } catch (err) {
-    console.error("Ошибка POST /news:", err);
-    res.status(500).json({ error: "Ошибка сервера при сохранении новости" });
-  }
-});
-
 
 app.post("/news", verifyToken, async (req, res) => {
   try {
@@ -309,6 +272,28 @@ app.post("/news", verifyToken, async (req, res) => {
   }
 });
 
+app.get("/news", verifyToken, async (req, res) => {
+  try {
+    const groupId = req.query.groupId;
+
+    if (!groupId) {
+      return res.status(400).json({ error: "groupId обязателен" });
+    }
+
+    const snap = await db.ref(`news/${groupId}`).once("value");
+    const data = snap.val() || {};
+
+    const newsList = Object.entries(data).map(([id, item]) => ({
+      id,
+      ...item
+    }));
+
+    res.json(newsList);
+  } catch (err) {
+    console.error("Ошибка GET /news:", err);
+    res.status(500).json({ error: "Ошибка сервера при получении новостей" });
+  }
+});
 
 
 // === Удаление новости ===
