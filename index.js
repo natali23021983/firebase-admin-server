@@ -222,6 +222,7 @@ app.post("/news", verifyToken, async (req, res) => {
 
     if (newsId) {
       // === Редактирование ===
+
       const ref = db.ref(`news/${groupId}/${newsId}`);
       const snap = await ref.once("value");
       const oldNews = snap.val();
@@ -248,7 +249,7 @@ app.post("/news", verifyToken, async (req, res) => {
       return res.json({ success: true, updated: true });
     } else {
       // === Добавление ===
-
+      const id = uuidv4();
       const ref = db.ref(`news/${groupId}/${id}`);
 
       const media = req.body.mediaUrls || imagesToKeep || [];  // ← подстраховка
