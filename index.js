@@ -209,6 +209,7 @@ app.post("/update-user", async (req, res) => {
   }
 });
 
+// === Добавление и редактирование новости (через ссылки) ===
 
 app.post("/news", verifyToken, async (req, res) => {
   try {
@@ -247,7 +248,7 @@ app.post("/news", verifyToken, async (req, res) => {
       return res.json({ success: true, updated: true });
     } else {
       // === Добавление ===
-
+      const id = uuidv4();
       const ref = db.ref(`news/${groupId}/${id}`);
 
       const media = req.body.mediaUrls || imagesToKeep || [];  // ← подстраховка
@@ -294,7 +295,6 @@ app.get("/news", verifyToken, async (req, res) => {
     res.status(500).json({ error: "Ошибка сервера при получении новостей" });
   }
 });
-
 
 // === Удаление новости ===
 app.post("/deleteNews", verifyToken, async (req, res) => {
