@@ -327,7 +327,7 @@ app.post("/deleteNews", verifyToken, async (req, res) => {
 
     const snap = await db.ref(`news/${groupId}/${newsId}`).once('value');
     const data = snap.val();
-    if (!data) return res.status(404).json({ error: "Новость не найдена" });
+    if (!data) return res.json({ success: true, message: "Новость уже удалена" });
     console.log("🔍 Проверка авторства:", {
           authorId,
           data.authorId,
