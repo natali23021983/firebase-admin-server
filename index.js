@@ -256,14 +256,17 @@ app.post("/news", verifyToken, async (req, res) => {
         const imageUrls = media.filter(u => !u.includes(".mp4"));
         const videoUrl = media.find(u => u.includes(".mp4"));
 
+        // Явно проверяем, что mediaUrls — массив
+        const media = Array.isArray(req.body.mediaUrls) ? req.body.mediaUrls : [];
+
+        // Формируем универсальное поле mediaUrls
         const data = {
           title,
           description,
-          imageUrls,
+          mediaUrls: media,  // 🔥 теперь сохраняем сразу все ссылки (и фото, и видео)
           timestamp: Date.now(),
           authorId
         };
-        if (videoUrl) data.videoUrl = videoUrl;
 
         await ref.set(data);
         return res.json({ success: true, id });
@@ -327,7 +330,7 @@ app.post("/deleteNews", verifyToken, async (req, res) => {
 
     const snap = await db.ref(`news/${groupId}/${newsId}`).once('value');
     const data = snap.val();
-    if (!data) return res.json({ success: true, message: "Новость уже удалена" });
+    if (!data) return res.status(404).json({ error: "Новость не найдена" });
     console.log("🔍 Проверка авторства:", {
           authorId,
           data.authorId,
