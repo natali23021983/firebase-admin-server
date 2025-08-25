@@ -213,7 +213,7 @@ app.post("/update-user", async (req, res) => {
 
 app.post("/news", verifyToken, async (req, res) => {
   try {
-    const { newsId, groupId, title, description, imagesToKeep = [], video } = req.body;
+    const { newsId, groupId, title, description, mediaUrls = [] } = req.body;
     const authorId = req.user.uid;
 
     if (!groupId || !title || !description) {
@@ -222,55 +222,44 @@ app.post("/news", verifyToken, async (req, res) => {
 
     if (newsId) {
       // === Редактирование ===
-
       const ref = db.ref(`news/${groupId}/${newsId}`);
       const snap = await ref.once("value");
       const oldNews = snap.val();
       if (!oldNews) return res.status(404).json({ error: "Новость не найдена" });
       if (oldNews.authorId !== authorId) return res.status(403).json({ error: "Нет прав" });
 
-      // Удаляем из S3 старые медиа
-      const oldUrls = [...(oldNews.imageUrls || []), oldNews.videoUrl].filter(Boolean);
-      const keepSet = new Set(imagesToKeep.concat(video).filter(Boolean));
+      // Удаляем из S3 те, которых больше нет
+      const oldUrls = oldNews.mediaUrls || [];
+      const keepSet = new Set(mediaUrls);
       const toDelete = oldUrls.filter(url => !keepSet.has(url));
       await deleteFromS3(toDelete);
 
-      // Обновляем
       const newData = {
         title,
         description,
-        imageUrls: imagesToKeep,
+        mediaUrls,
         authorId,
         timestamp: Date.now(),
       };
-      if (video) newData.videoUrl = video;
 
       await ref.update(newData);
       return res.json({ success: true, updated: true });
-    }  const id = uuidv4();
-        const ref = db.ref(`news/${groupId}/${id}`);
+    }
 
-        // Явно проверяем, что mediaUrls — массив
-        const media = Array.isArray(req.body.mediaUrls) ? req.body.mediaUrls : [];
+    // === Добавление новости ===
+    const id = uuidv4();
+    const ref = db.ref(`news/${groupId}/${id}`);
 
-        const imageUrls = media.filter(u => !u.includes(".mp4"));
-        const videoUrl = media.find(u => u.includes(".mp4"));
+    const data = {
+      title,
+      description,
+      mediaUrls,
+      timestamp: Date.now(),
+      authorId
+    };
 
-        // Явно проверяем, что mediaUrls — массив
-        const media = Array.isArray(req.body.mediaUrls) ? req.body.mediaUrls : [];
-
-        // Формируем универсальное поле mediaUrls
-        const data = {
-          title,
-          description,
-          mediaUrls: media,  // 🔥 теперь сохраняем сразу все ссылки (и фото, и видео)
-          timestamp: Date.now(),
-          authorId
-        };
-
-        await ref.set(data);
-        return res.json({ success: true, id });
-      }
+    await ref.set(data);
+    return res.json({ success: true, id });
 
   } catch (err) {
     console.error("Ошибка POST /news:", err);
@@ -290,33 +279,25 @@ app.get("/news", verifyToken, async (req, res) => {
     const snap = await db.ref(`news/${groupId}`).once("value");
     const newsData = snap.val() || {};
 
-    // Преобразуем под структуру NewsItem
-    const newsList = Object.entries(newsData).map(([id, news]) => {
-      const mediaUrls = [
-        ...(news.imageUrls || []),
-        ...(news.videoUrl ? [news.videoUrl] : [])
-      ];
+    const newsList = Object.entries(newsData).map(([id, news]) => ({
+      id,
+      title: news.title,
+      description: news.description,
+      groupId: groupId,
+      authorId: news.authorId,
+      mediaUrls: news.mediaUrls || [],   // 🔥 только одно поле
+      timestamp: news.timestamp || 0
+    }));
 
-      return {
-        id,  // заменили newsId → id
-        title: news.title,
-        description: news.description,
-        groupId: groupId,
-        authorId: news.authorId,
-        mediaUrls,  // универсальное поле
-        timestamp: news.timestamp || 0  // можно сохранить, если надо сортировать
-      };
-    });
-
-    // Сортировка по убыванию даты
     newsList.sort((a, b) => b.timestamp - a.timestamp);
 
-    res.json(newsList);  // теперь сразу возвращаем массив, без обёртки { success, news }
+    res.json(newsList);
   } catch (err) {
     console.error("Ошибка GET /news:", err);
     res.status(500).json({ error: err.message });
   }
 });
+
 
 // === Удаление новости ===
 app.post("/deleteNews", verifyToken, async (req, res) => {
@@ -331,20 +312,12 @@ app.post("/deleteNews", verifyToken, async (req, res) => {
     const snap = await db.ref(`news/${groupId}/${newsId}`).once('value');
     const data = snap.val();
     if (!data) return res.status(404).json({ error: "Новость не найдена" });
-    console.log("🔍 Проверка авторства:", {
-          authorId,
-          data.authorId,
-          groupId,
-          newsId
-        });
 
     if (data.authorId !== authorId) return res.status(403).json({ error: "Нет прав" });
 
-    const urls = [...(data.imageUrls || []), data.videoUrl].filter(Boolean);
+    const urls = data.mediaUrls || [];
     await deleteFromS3(urls);
     await db.ref(`news/${groupId}/${newsId}`).remove();
-
-
 
     res.json({ success: true });
   } catch (err) {
@@ -352,6 +325,7 @@ app.post("/deleteNews", verifyToken, async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
 
 
 // === Генерация signed URL для прямой загрузки в S3 ===
