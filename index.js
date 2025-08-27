@@ -348,8 +348,10 @@ app.post('/generate-upload-url', verifyToken, async (req, res) => {
     const signedUrlParams = {
       Bucket: BUCKET_NAME,
       Key: key,
-      ContentType: contentType
+      ContentType: contentType,
+      ACL: "public-read"   // 🔥 чтобы файл был доступен по прямой ссылке
     };
+
 
     console.log('ContentType, который будет передан:', contentType);
 
