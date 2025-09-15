@@ -12,7 +12,8 @@ const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 
 const app = express();
 app.use(cors());
-app.use(bodyParser.json());
+app.use(express.json()); // вместо bodyParser.json()
+
 
 // Multer для загрузки в память
 const upload = multer({ storage: multer.memoryStorage() });
