@@ -362,7 +362,7 @@ app.post('/generate-upload-url', verifyToken, async (req, res) => {
   console.log('Тело запроса:', JSON.stringify(req.body, null, 2));
 
   try {
-    const { fileName, fileType, groupId, isPrivateChat } = req.body;
+    const { fileName, fileType, groupId, isPrivateChat, context } = req.body;
 
     // Валидация обязательных полей
     if (!fileName || !fileType) {
@@ -385,33 +385,26 @@ app.post('/generate-upload-url', verifyToken, async (req, res) => {
       console.log('Скорректированное имя файла:', finalFileName);
     }
 
-    // Определяем тип контента и папку для сохранения
+
     // Определяем тип контента и папку для сохранения
     let folder;
     let finalGroupId = groupId;
-
-    // Новый параметр для явного указания контекста (chat/news/...)
-    const { context } = req.body;
 
     if (context === 'news') {
       // Для новостей
       folder = 'news/';
       console.log('Тип: новость');
     } else if (isPrivateChat === true) {
-      // Для приватных чатов (флаг)
       folder = 'private-chats/';
       console.log('Тип: приватный чат (по флагу isPrivateChat)');
     } else if (groupId && groupId.startsWith('private_')) {
-      // Обработка legacy формата
       folder = 'private-chats/';
       finalGroupId = groupId.replace('private_', '');
       console.log('Тип: приватный чат (legacy format)');
     } else if (groupId) {
-      // Для групповых чатов
       folder = 'group-chats/';
       console.log('Тип: групповой чат');
     } else {
-      // Если ничего не указано — в "прочее"
       folder = 'misc/';
       console.log('Тип: прочее (без контекста)');
     }
