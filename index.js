@@ -386,11 +386,19 @@ app.post('/generate-upload-url', verifyToken, async (req, res) => {
     }
 
     // Определяем тип контента и папку для сохранения
+    // Определяем тип контента и папку для сохранения
     let folder;
     let finalGroupId = groupId;
 
-    if (isPrivateChat === true) {
-      // Для приватных чатов (явно указано isPrivateChat: true)
+    // Новый параметр для явного указания контекста (chat/news/...)
+    const { context } = req.body;
+
+    if (context === 'news') {
+      // Для новостей
+      folder = 'news/';
+      console.log('Тип: новость');
+    } else if (isPrivateChat === true) {
+      // Для приватных чатов (флаг)
       folder = 'private-chats/';
       console.log('Тип: приватный чат (по флагу isPrivateChat)');
     } else if (groupId && groupId.startsWith('private_')) {
@@ -403,10 +411,11 @@ app.post('/generate-upload-url', verifyToken, async (req, res) => {
       folder = 'group-chats/';
       console.log('Тип: групповой чат');
     } else {
-      // Для новостей (по умолчанию)
-      folder = 'news/';
-      console.log('Тип: новость');
+      // Если ничего не указано — в "прочее"
+      folder = 'misc/';
+      console.log('Тип: прочее (без контекста)');
     }
+
 
     // Проверяем доступ пользователя к группе (если это групповой/приватный чат)
     if (finalGroupId && folder !== 'news/') {
