@@ -521,10 +521,14 @@ async function checkChatAccess(userId, chatId, isPrivate) {
 
       if (userSnap.exists()) {
         const user = userSnap.val();
+
         if (user.children) {
           for (const [childId, child] of Object.entries(user.children)) {
-            if (child.group === chatId) {
-              console.log('Пользователь имеет ребенка в группе:', childId, child.fullName);
+            if (
+              (child.groupId && child.groupId === chatId) || // проверка по id
+              (child.group && child.group === chatId)        // проверка по названию (legacy)
+            ) {
+              console.log('✅ Пользователь имеет ребенка в группе:', childId, child.fullName);
               return true;
             }
           }
@@ -533,15 +537,18 @@ async function checkChatAccess(userId, chatId, isPrivate) {
         // Проверяем, является ли пользователь родителем через связь с детьми
         if (user.role === 'Родитель' && user.children) {
           for (const child of Object.values(user.children)) {
-            if (child.group === chatId) {
-              console.log('Родитель имеет ребенка в группе:', child.fullName);
+            if (
+              (child.groupId && child.groupId === chatId) ||
+              (child.group && child.group === chatId)
+            ) {
+              console.log('✅ Родитель имеет ребенка в группе:', child.fullName);
               return true;
             }
           }
         }
       }
 
-      console.log('Доступ к группе запрещен для пользователя:', userId);
+      console.log('⛔ Доступ к группе запрещен для пользователя:', userId);
       return false;
     }
   } catch (error) {
@@ -549,6 +556,7 @@ async function checkChatAccess(userId, chatId, isPrivate) {
     return false;
   }
 }
+
 // === Проверка сервера ===
 app.get("/", (req, res) => res.send("Server is running"));
 
