@@ -488,16 +488,23 @@ app.post('/generate-upload-url', verifyToken, async (req, res) => {
 // Функция проверки доступа к чату
  async function checkChatAccess(userId, chatId, isPrivate) {
    try {
-     console.log('Проверка доступа для пользователя:', userId, 'к чату:', chatId, 'тип:', isPrivate ? 'private' : 'group');
+     console.log(
+       'Проверка доступа для пользователя:',
+       userId,
+       'к чату:',
+       chatId,
+       'тип:',
+       isPrivate ? 'private' : 'group'
+     );
 
      if (isPrivate) {
-       // Для приватных чатов: проверяем, является ли пользователь участником
+       // Для приватных чатов: пользователь должен быть одним из участников
        const parts = chatId.split('_');
        const hasAccess = parts.includes(userId);
        console.log('Приватный чат доступ:', hasAccess, 'участники:', parts);
        return hasAccess;
      } else {
-       // Для групповых чатов: проверяем, состоит ли пользователь в группе
+       // Для групповых чатов
        const groupRef = db.ref(`groups/${chatId}`);
        const groupSnap = await groupRef.once('value');
 
@@ -508,40 +515,27 @@ app.post('/generate-upload-url', verifyToken, async (req, res) => {
 
        const group = groupSnap.val();
 
-       // Проверяем teachers
-       const isTeacher = group.teachers && group.teachers[userId];
-       if (isTeacher) {
-         console.log('Пользователь является педагогом группы');
+       // 1. Если педагог группы
+       if (group.teachers && group.teachers[userId]) {
+         console.log('✅ Пользователь является педагогом группы');
          return true;
        }
 
-       // Проверяем, есть ли у пользователя дети в этой группе
+       // 2. Проверяем через профиль пользователя
        const userRef = db.ref(`users/${userId}`);
        const userSnap = await userRef.once('value');
 
        if (userSnap.exists()) {
          const user = userSnap.val();
 
+         // Если родитель, у которого есть дети, прикреплённые к этой группе
          if (user.children) {
            for (const [childId, child] of Object.entries(user.children)) {
              if (
-               (child.groupId && child.groupId === chatId) || // проверка по id
-               (child.group && child.group === chatId)        // проверка по названию (legacy)
-             ) {
-               console.log('✅ Пользователь имеет ребенка в группе:', childId, child.fullName);
-               return true;
-             }
-           }
-         }
-
-         // Проверяем, является ли пользователь родителем через связь с детьми
-         if (user.role === 'Родитель' && user.children) {
-           for (const child of Object.values(user.children)) {
-             if (
                (child.groupId && child.groupId === chatId) ||
-               (child.group && child.group === chatId)
+               (child.group && child.group === chatId) // legacy
              ) {
-               console.log('✅ Родитель имеет ребенка в группе:', child.fullName);
+               console.log('✅ Пользователь связан с группой через ребёнка:', childId);
                return true;
              }
            }
