@@ -521,17 +521,31 @@ app.post('/generate-upload-url', verifyToken, async (req, res) => {
          return true;
        }
 
-       // 2. Если явно указан как родитель
+       // 2. Если явно указан как родитель (новая структура)
        if (group.parents && group.parents[userId]) {
          console.log('✅ Пользователь является родителем группы');
          return true;
        }
 
-       // 3. Если пользователь есть в списке детей (старые версии структуры)
-       if (group.children && group.children[userId]) {
-         console.log('✅ Пользователь найден в children группы');
-         return true;
+       // 3. Если пользователь связан через ребёнка
+       if (group.children) {
+         const userRef = db.ref(`users/${userId}`);
+         const userSnap = await userRef.once('value');
+
+         if (userSnap.exists()) {
+           const user = userSnap.val();
+
+           if (user.role === "Родитель" && user.children) {
+             for (const childId of Object.keys(user.children)) {
+               if (group.children[childId]) {
+                 console.log('✅ Родитель связан с группой через ребёнка:', childId);
+                 return true;
+               }
+             }
+           }
+         }
        }
+
 
        // 4. Проверка через профиль пользователя (родитель с ребёнком в группе)
        const userRef = db.ref(`users/${userId}`);
