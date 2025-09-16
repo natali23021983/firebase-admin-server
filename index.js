@@ -486,76 +486,76 @@ app.post('/generate-upload-url', verifyToken, async (req, res) => {
 });
 
 // Функция проверки доступа к чату
-async function checkChatAccess(userId, chatId, isPrivate) {
-  try {
-    console.log('Проверка доступа для пользователя:', userId, 'к чату:', chatId, 'тип:', isPrivate ? 'private' : 'group');
+ async function checkChatAccess(userId, chatId, isPrivate) {
+   try {
+     console.log('Проверка доступа для пользователя:', userId, 'к чату:', chatId, 'тип:', isPrivate ? 'private' : 'group');
 
-    if (isPrivate) {
-      // Для приватных чатов: проверяем, является ли пользователь участником
-      const parts = chatId.split('_');
-      const hasAccess = parts.includes(userId);
-      console.log('Приватный чат доступ:', hasAccess, 'участники:', parts);
-      return hasAccess;
-    } else {
-      // Для групповых чатов: проверяем, состоит ли пользователь в группе
-      const groupRef = db.ref(`groups/${chatId}`);
-      const groupSnap = await groupRef.once('value');
+     if (isPrivate) {
+       // Для приватных чатов: проверяем, является ли пользователь участником
+       const parts = chatId.split('_');
+       const hasAccess = parts.includes(userId);
+       console.log('Приватный чат доступ:', hasAccess, 'участники:', parts);
+       return hasAccess;
+     } else {
+       // Для групповых чатов: проверяем, состоит ли пользователь в группе
+       const groupRef = db.ref(`groups/${chatId}`);
+       const groupSnap = await groupRef.once('value');
 
-      if (!groupSnap.exists()) {
-        console.log('Группа не найдена:', chatId);
-        return false;
-      }
+       if (!groupSnap.exists()) {
+         console.log('Группа не найдена:', chatId);
+         return false;
+       }
 
-      const group = groupSnap.val();
+       const group = groupSnap.val();
 
-      // Проверяем teachers
-      const isTeacher = group.teachers && group.teachers[userId];
-      if (isTeacher) {
-        console.log('Пользователь является педагогом группы');
-        return true;
-      }
+       // Проверяем teachers
+       const isTeacher = group.teachers && group.teachers[userId];
+       if (isTeacher) {
+         console.log('Пользователь является педагогом группы');
+         return true;
+       }
 
-      // Проверяем, есть ли у пользователя дети в этой группе
-      const userRef = db.ref(`users/${userId}`);
-      const userSnap = await userRef.once('value');
+       // Проверяем, есть ли у пользователя дети в этой группе
+       const userRef = db.ref(`users/${userId}`);
+       const userSnap = await userRef.once('value');
 
-      if (userSnap.exists()) {
-        const user = userSnap.val();
+       if (userSnap.exists()) {
+         const user = userSnap.val();
 
-        if (user.children) {
-          for (const [childId, child] of Object.entries(user.children)) {
-            if (
-              (child.groupId && child.groupId === chatId) || // проверка по id
-              (child.group && child.group === chatId)        // проверка по названию (legacy)
-            ) {
-              console.log('✅ Пользователь имеет ребенка в группе:', childId, child.fullName);
-              return true;
-            }
-          }
-        }
+         if (user.children) {
+           for (const [childId, child] of Object.entries(user.children)) {
+             if (
+               (child.groupId && child.groupId === chatId) || // проверка по id
+               (child.group && child.group === chatId)        // проверка по названию (legacy)
+             ) {
+               console.log('✅ Пользователь имеет ребенка в группе:', childId, child.fullName);
+               return true;
+             }
+           }
+         }
 
-        // Проверяем, является ли пользователь родителем через связь с детьми
-        if (user.role === 'Родитель' && user.children) {
-          for (const child of Object.values(user.children)) {
-            if (
-              (child.groupId && child.groupId === chatId) ||
-              (child.group && child.group === chatId)
-            ) {
-              console.log('✅ Родитель имеет ребенка в группе:', child.fullName);
-              return true;
-            }
-          }
-        }
-      }
+         // Проверяем, является ли пользователь родителем через связь с детьми
+         if (user.role === 'Родитель' && user.children) {
+           for (const child of Object.values(user.children)) {
+             if (
+               (child.groupId && child.groupId === chatId) ||
+               (child.group && child.group === chatId)
+             ) {
+               console.log('✅ Родитель имеет ребенка в группе:', child.fullName);
+               return true;
+             }
+           }
+         }
+       }
 
-      console.log('⛔ Доступ к группе запрещен для пользователя:', userId);
-      return false;
-    }
-  } catch (error) {
-    console.error('Ошибка проверки доступа к чату:', error);
-    return false;
-  }
-}
+       console.log('⛔ Доступ к группе запрещен для пользователя:', userId);
+       return false;
+     }
+   } catch (error) {
+     console.error('Ошибка проверки доступа к чату:', error);
+     return false;
+   }
+ }
 
 // === Проверка сервера ===
 app.get("/", (req, res) => res.send("Server is running"));
