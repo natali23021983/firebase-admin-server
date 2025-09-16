@@ -521,46 +521,27 @@ app.post('/generate-upload-url', verifyToken, async (req, res) => {
          return true;
        }
 
-       // 2. Если явно указан как родитель (новая структура)
+       // 2. Если явно указан как родитель
        if (group.parents && group.parents[userId]) {
          console.log('✅ Пользователь является родителем группы');
          return true;
        }
 
-       // 3. Если пользователь связан через ребёнка
-       if (group.children) {
-         const userRef = db.ref(`users/${userId}`);
-         const userSnap = await userRef.once('value');
-
-         if (userSnap.exists()) {
-           const user = userSnap.val();
-
-           if (user.role === "Родитель" && user.children) {
-             for (const childId of Object.keys(user.children)) {
-               if (group.children[childId]) {
-                 console.log('✅ Родитель связан с группой через ребёнка:', childId);
-                 return true;
-               }
-             }
-           }
-         }
-       }
-
-
-       // 4. Проверка через профиль пользователя (родитель с ребёнком в группе)
+       // 3. Если родитель связан с группой через ребёнка
        const userRef = db.ref(`users/${userId}`);
        const userSnap = await userRef.once('value');
 
        if (userSnap.exists()) {
          const user = userSnap.val();
 
-         if (user.children) {
-           for (const [childId, child] of Object.entries(user.children)) {
+         if (user.role === "Родитель" && user.children) {
+           for (const childId of Object.keys(user.children)) {
              if (
-               (child.groupId && child.groupId === chatId) ||
-               (child.group && child.group === chatId) // legacy
+               (group.children && group.children[childId]) || // ребёнок есть в группе
+               (user.children[childId].groupId === chatId) || // или по полю groupId
+               (user.children[childId].group === chatId)      // legacy
              ) {
-               console.log('✅ Пользователь связан с группой через ребёнка:', childId);
+               console.log('✅ Родитель связан с группой через ребёнка:', childId);
                return true;
              }
            }
@@ -575,6 +556,7 @@ app.post('/generate-upload-url', verifyToken, async (req, res) => {
      return false;
    }
  }
+
 
 
 // === Проверка сервера ===
