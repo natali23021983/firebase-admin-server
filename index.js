@@ -12,7 +12,7 @@ const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 
 const app = express();
 app.use(cors());
-app.use(express.json()); // вместо bodyParser.json()
+app.use(express.json());
 
 
 // Multer для загрузки в память
@@ -332,49 +332,135 @@ app.post("/deleteNews", verifyToken, async (req, res) => {
 // === Генерация signed URL для прямой загрузки в S3 ===
 app.post('/generate-upload-url', verifyToken, async (req, res) => {
   console.log('=== /generate-upload-url: запрос получен');
-  try {
-    const { fileName, fileType, groupId } = req.body;
-    console.log('Тело запроса:', req.body);
+  console.log('Тело запроса:', req.body);
 
-    if (!fileName || !fileType || !groupId) {
-      console.log('Ошибка: отсутствуют обязательные поля');
-      return res.status(400).json({ error: "fileName, fileType и groupId обязательны" });
+  try {
+    const { fileName, fileType, groupId, isPrivateChat } = req.body;
+
+    // Валидация обязательных полей
+    if (!fileName || !fileType) {
+      console.log('Ошибка: отсутствуют обязательные поля fileName или fileType');
+      return res.status(400).json({ error: "fileName и fileType обязательны" });
     }
 
-    const key = `news/${groupId}/${Date.now()}_${fileName}`;
-    console.log('Генерируем ключ для файла:', key);
+    // Определяем тип контента и папку для сохранения
+    let folder;
+    let finalGroupId = groupId;
 
-    const contentType = String(fileType); // Принудительно строкой
+    if (isPrivateChat) {
+      // Для приватных чатов
+      folder = 'private-chats/';
+      console.log('Тип: приватный чат');
+    } else if (groupId && groupId.startsWith('private_')) {
+      // Обработка legacy формата (если приходит с префиксом private_)
+      folder = 'private-chats/';
+      finalGroupId = groupId.replace('private_', '');
+      console.log('Тип: приватный чат (legacy format)');
+    } else if (groupId) {
+      // Для групповых чатов
+      folder = 'group-chats/';
+      console.log('Тип: групповой чат');
+    } else {
+      // Для новостей (по умолчанию)
+      folder = 'news/';
+      console.log('Тип: новость');
+    }
+
+    // Проверяем доступ пользователя к группе (если это групповой/приватный чат)
+    if (finalGroupId && folder !== 'news/') {
+      const hasAccess = await checkChatAccess(req.user.uid, finalGroupId, folder === 'private-chats/');
+      if (!hasAccess) {
+        console.log('Ошибка: нет доступа к чату');
+        return res.status(403).json({ error: "Нет доступа к этому чату" });
+      }
+    }
+
+    // Генерируем уникальный ключ для файла
+    const timestamp = Date.now();
+    const uniqueId = uuidv4().substring(0, 8);
+    const safeFileName = fileName.replace(/[^a-zA-Z0-9.-]/g, '_');
+    const key = `${folder}${finalGroupId ? finalGroupId + '/' : ''}${timestamp}_${uniqueId}_${safeFileName}`;
+
+    console.log('Генерируем ключ для файла:', key);
+    console.log('ContentType:', fileType);
 
     const signedUrlParams = {
       Bucket: BUCKET_NAME,
       Key: key,
-      ContentType: contentType,
-      ACL: "public-read"   // 🔥 чтобы файл был доступен по прямой ссылке
+      ContentType: String(fileType),
+      ACL: "public-read"
     };
 
-
-    console.log('ContentType, который будет передан:', contentType);
-
     const command = new PutObjectCommand(signedUrlParams);
-
     console.log('Вызов getSignedUrl...');
 
     const uploadUrl = await getSignedUrl(s3, command, { expiresIn: 300 });
-
-    console.log('Signed URL получен:', uploadUrl);
-
     const fileUrl = `https://${BUCKET_NAME}.storage.yandexcloud.net/${key}`;
 
-    res.json({ uploadUrl, fileUrl });
-    console.log('Ответ отправлен');
+    console.log('Signed URL получен:', uploadUrl);
+    console.log('File URL:', fileUrl);
+
+    res.json({
+      uploadUrl,
+      fileUrl,
+      key, // optional: можно вернуть ключ для возможного удаления
+      expiresIn: 300
+    });
+
   } catch (err) {
     console.error("Ошибка генерации upload URL:", err);
-    res.status(500).json({ error: "Ошибка сервера" });
+
+    // Более детальные ошибки
+    if (err.name === 'CredentialsProviderError') {
+      return res.status(500).json({ error: "Ошибка конфигурации S3" });
+    }
+    if (err.name === 'NoSuchBucket') {
+      return res.status(500).json({ error: "S3 bucket не найден" });
+    }
+
+    res.status(500).json({ error: "Ошибка сервера: " + err.message });
   }
 });
 
+// Функция проверки доступа к чату
+async function checkChatAccess(userId, chatId, isPrivate) {
+  try {
+    if (isPrivate) {
+      // Для приватных чатов: проверяем, является ли пользователь участником
+      const parts = chatId.split('_');
+      return parts.includes(userId);
+    } else {
+      // Для групповых чатов: проверяем, состоит ли пользователь в группе
+      const groupRef = db.ref(`groups/${chatId}`);
+      const groupSnap = await groupRef.once('value');
 
+      if (!groupSnap.exists()) return false;
+
+      const group = groupSnap.val();
+      // Проверяем teachers и children (родители через детей)
+      const isTeacher = group.teachers && group.teachers[userId];
+      if (isTeacher) return true;
+
+      // Проверяем, есть ли у пользователя дети в этой группе
+      const userRef = db.ref(`users/${userId}`);
+      const userSnap = await userRef.once('value');
+
+      if (userSnap.exists()) {
+        const user = userSnap.val();
+        if (user.children) {
+          for (const child of Object.values(user.children)) {
+            if (child.group === chatId) return true;
+          }
+        }
+      }
+
+      return false;
+    }
+  } catch (error) {
+    console.error('Error checking chat access:', error);
+    return false;
+  }
+}
 // === Проверка сервера ===
 app.get("/", (req, res) => res.send("Server is running"));
 
