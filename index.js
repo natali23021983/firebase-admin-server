@@ -551,6 +551,7 @@ app.post('/generate-upload-url', verifyToken, async (req, res) => {
    }
  }
 
+
 // === Проверка сервера ===
 app.get("/", (req, res) => res.send("Server is running"));
 
