@@ -9,14 +9,41 @@ const bodyParser = require("body-parser");
 const path = require('path');
 const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 
-
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-
 // Multer для загрузки в память
 const upload = multer({ storage: multer.memoryStorage() });
+
+// === MIME types mapping ===
+const mimeTypeMapping = {
+  'image/jpeg': '.jpg',
+  'image/png': '.png',
+  'image/gif': '.gif',
+  'image/webp': '.webp',
+  'application/pdf': '.pdf',
+  'video/mp4': '.mp4',
+  'video/quicktime': '.mov',
+  'video/x-msvideo': '.avi',
+  'video/x-matroska': '.mkv',
+  'application/msword': '.doc',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': '.docx',
+  'application/vnd.ms-excel': '.xls',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': '.xlsx',
+  'application/vnd.ms-powerpoint': '.ppt',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation': '.pptx',
+  'application/zip': '.zip',
+  'application/x-rar-compressed': '.rar',
+  'text/plain': '.txt',
+  'audio/mpeg': '.mp3',
+  'audio/wav': '.wav'
+};
+
+// Функция для получения расширения файла по MIME type
+const getFileExtension = (mimeType) => {
+  return mimeTypeMapping[mimeType] || '.bin';
+};
 
 // === Firebase Admin SDK ===
 try{
@@ -332,7 +359,7 @@ app.post("/deleteNews", verifyToken, async (req, res) => {
 // === Генерация signed URL для прямой загрузки в S3 ===
 app.post('/generate-upload-url', verifyToken, async (req, res) => {
   console.log('=== /generate-upload-url: запрос получен');
-  console.log('Тело запроса:', req.body);
+  console.log('Тело запроса:', JSON.stringify(req.body, null, 2));
 
   try {
     const { fileName, fileType, groupId, isPrivateChat } = req.body;
@@ -343,16 +370,31 @@ app.post('/generate-upload-url', verifyToken, async (req, res) => {
       return res.status(400).json({ error: "fileName и fileType обязательны" });
     }
 
+    // Определяем правильное расширение файла
+    const fileExtension = getFileExtension(fileType);
+    let finalFileName = fileName;
+
+    // Если у файла нет расширения или оно неправильное - добавляем правильное
+    if (!finalFileName.includes('.') || !finalFileName.toLowerCase().endsWith(fileExtension.toLowerCase())) {
+      // Убираем существующее расширение если есть
+      const baseName = finalFileName.includes('.')
+        ? finalFileName.substring(0, finalFileName.lastIndexOf('.'))
+        : finalFileName;
+
+      finalFileName = baseName + fileExtension;
+      console.log('Скорректированное имя файла:', finalFileName);
+    }
+
     // Определяем тип контента и папку для сохранения
     let folder;
     let finalGroupId = groupId;
 
-    if (isPrivateChat) {
-      // Для приватных чатов
+    if (isPrivateChat === true) {
+      // Для приватных чатов (явно указано isPrivateChat: true)
       folder = 'private-chats/';
-      console.log('Тип: приватный чат');
+      console.log('Тип: приватный чат (по флагу isPrivateChat)');
     } else if (groupId && groupId.startsWith('private_')) {
-      // Обработка legacy формата (если приходит с префиксом private_)
+      // Обработка legacy формата
       folder = 'private-chats/';
       finalGroupId = groupId.replace('private_', '');
       console.log('Тип: приватный чат (legacy format)');
@@ -370,18 +412,19 @@ app.post('/generate-upload-url', verifyToken, async (req, res) => {
     if (finalGroupId && folder !== 'news/') {
       const hasAccess = await checkChatAccess(req.user.uid, finalGroupId, folder === 'private-chats/');
       if (!hasAccess) {
-        console.log('Ошибка: нет доступа к чату');
+        console.log('Ошибка: пользователь', req.user.uid, 'не имеет доступа к чату', finalGroupId);
         return res.status(403).json({ error: "Нет доступа к этому чату" });
       }
+      console.log('Доступ к чату подтвержден для пользователя:', req.user.uid);
     }
 
     // Генерируем уникальный ключ для файла
     const timestamp = Date.now();
     const uniqueId = uuidv4().substring(0, 8);
-    const safeFileName = fileName.replace(/[^a-zA-Z0-9.-]/g, '_');
+    const safeFileName = finalFileName.replace(/[^a-zA-Z0-9.-]/g, '_');
     const key = `${folder}${finalGroupId ? finalGroupId + '/' : ''}${timestamp}_${uniqueId}_${safeFileName}`;
 
-    console.log('Генерируем ключ для файла:', key);
+    console.log('Финальный ключ для файла:', key);
     console.log('ContentType:', fileType);
 
     const signedUrlParams = {
@@ -392,54 +435,83 @@ app.post('/generate-upload-url', verifyToken, async (req, res) => {
     };
 
     const command = new PutObjectCommand(signedUrlParams);
-    console.log('Вызов getSignedUrl...');
+    console.log('Генерация signed URL...');
 
     const uploadUrl = await getSignedUrl(s3, command, { expiresIn: 300 });
     const fileUrl = `https://${BUCKET_NAME}.storage.yandexcloud.net/${key}`;
 
-    console.log('Signed URL получен:', uploadUrl);
-    console.log('File URL:', fileUrl);
+    console.log('✅ Signed URL успешно сгенерирован');
+    console.log('📁 File URL:', fileUrl);
 
     res.json({
+      success: true,
       uploadUrl,
       fileUrl,
-      key, // optional: можно вернуть ключ для возможного удаления
-      expiresIn: 300
+      fileName: finalFileName,
+      key,
+      expiresIn: 300,
+      expiresAt: Date.now() + 300000 // timestamp истечения
     });
 
   } catch (err) {
-    console.error("Ошибка генерации upload URL:", err);
+    console.error("❌ Ошибка генерации upload URL:", err);
 
     // Более детальные ошибки
     if (err.name === 'CredentialsProviderError') {
-      return res.status(500).json({ error: "Ошибка конфигурации S3" });
+      return res.status(500).json({
+        success: false,
+        error: "Ошибка конфигурации S3: проверьте credentials"
+      });
     }
     if (err.name === 'NoSuchBucket') {
-      return res.status(500).json({ error: "S3 bucket не найден" });
+      return res.status(500).json({
+        success: false,
+        error: `S3 bucket не найден: ${BUCKET_NAME}`
+      });
+    }
+    if (err.name === 'ValidationError') {
+      return res.status(400).json({
+        success: false,
+        error: "Неверные параметры запроса: " + err.message
+      });
     }
 
-    res.status(500).json({ error: "Ошибка сервера: " + err.message });
+    res.status(500).json({
+      success: false,
+      error: "Внутренняя ошибка сервера: " + err.message
+    });
   }
 });
 
 // Функция проверки доступа к чату
 async function checkChatAccess(userId, chatId, isPrivate) {
   try {
+    console.log('Проверка доступа для пользователя:', userId, 'к чату:', chatId, 'тип:', isPrivate ? 'private' : 'group');
+
     if (isPrivate) {
       // Для приватных чатов: проверяем, является ли пользователь участником
       const parts = chatId.split('_');
-      return parts.includes(userId);
+      const hasAccess = parts.includes(userId);
+      console.log('Приватный чат доступ:', hasAccess, 'участники:', parts);
+      return hasAccess;
     } else {
       // Для групповых чатов: проверяем, состоит ли пользователь в группе
       const groupRef = db.ref(`groups/${chatId}`);
       const groupSnap = await groupRef.once('value');
 
-      if (!groupSnap.exists()) return false;
+      if (!groupSnap.exists()) {
+        console.log('Группа не найдена:', chatId);
+        return false;
+      }
 
       const group = groupSnap.val();
-      // Проверяем teachers и children (родители через детей)
+
+      // Проверяем teachers
       const isTeacher = group.teachers && group.teachers[userId];
-      if (isTeacher) return true;
+      if (isTeacher) {
+        console.log('Пользователь является педагогом группы');
+        return true;
+      }
 
       // Проверяем, есть ли у пользователя дети в этой группе
       const userRef = db.ref(`users/${userId}`);
@@ -448,16 +520,30 @@ async function checkChatAccess(userId, chatId, isPrivate) {
       if (userSnap.exists()) {
         const user = userSnap.val();
         if (user.children) {
+          for (const [childId, child] of Object.entries(user.children)) {
+            if (child.group === chatId) {
+              console.log('Пользователь имеет ребенка в группе:', childId, child.fullName);
+              return true;
+            }
+          }
+        }
+
+        // Проверяем, является ли пользователь родителем через связь с детьми
+        if (user.role === 'Родитель' && user.children) {
           for (const child of Object.values(user.children)) {
-            if (child.group === chatId) return true;
+            if (child.group === chatId) {
+              console.log('Родитель имеет ребенка в группе:', child.fullName);
+              return true;
+            }
           }
         }
       }
 
+      console.log('Доступ к группе запрещен для пользователя:', userId);
       return false;
     }
   } catch (error) {
-    console.error('Error checking chat access:', error);
+    console.error('Ошибка проверки доступа к чату:', error);
     return false;
   }
 }
