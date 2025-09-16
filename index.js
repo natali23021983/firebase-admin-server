@@ -498,7 +498,7 @@ app.post('/generate-upload-url', verifyToken, async (req, res) => {
      );
 
      if (isPrivate) {
-       // Для приватных чатов: пользователь должен быть одним из участников
+       // Для приватных чатов: проверяем участников по chatId
        const parts = chatId.split('_');
        const hasAccess = parts.includes(userId);
        console.log('Приватный чат доступ:', hasAccess, 'участники:', parts);
@@ -515,20 +515,31 @@ app.post('/generate-upload-url', verifyToken, async (req, res) => {
 
        const group = groupSnap.val();
 
-       // 1. Если педагог группы
+       // 1. Если педагог
        if (group.teachers && group.teachers[userId]) {
          console.log('✅ Пользователь является педагогом группы');
          return true;
        }
 
-       // 2. Проверяем через профиль пользователя
+       // 2. Если явно указан как родитель
+       if (group.parents && group.parents[userId]) {
+         console.log('✅ Пользователь является родителем группы');
+         return true;
+       }
+
+       // 3. Если пользователь есть в списке детей (старые версии структуры)
+       if (group.children && group.children[userId]) {
+         console.log('✅ Пользователь найден в children группы');
+         return true;
+       }
+
+       // 4. Проверка через профиль пользователя (родитель с ребёнком в группе)
        const userRef = db.ref(`users/${userId}`);
        const userSnap = await userRef.once('value');
 
        if (userSnap.exists()) {
          const user = userSnap.val();
 
-         // Если родитель, у которого есть дети, прикреплённые к этой группе
          if (user.children) {
            for (const [childId, child] of Object.entries(user.children)) {
              if (
