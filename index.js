@@ -253,13 +253,15 @@ app.post('/deleteChild', async (req, res) => {
   }
 
   try {
-    console.log(`Удаление ребенка: userId=${userId}, childId=${childId}`);
+    console.log('=== DELETE CHILD DEBUG START ===');
+    console.log('Request body:', JSON.stringify(req.body, null, 2));
 
     // 1. Получаем данные ребенка
     const childRef = db.ref(`users/${userId}/children/${childId}`);
     const childSnap = await childRef.once('value');
 
     if (!childSnap.exists()) {
+      console.log('❌ Ребенок не найден в базе пользователя');
       return res.status(404).json({ error: "Ребенок не найден" });
     }
 
@@ -267,47 +269,60 @@ app.post('/deleteChild', async (req, res) => {
     const groupId = child.group;
     const childName = child.fullName;
 
-    console.log(`Найден ребенок: ${childName}, группа: ${groupId}`);
+    console.log('📋 Данные ребенка:', JSON.stringify(child, null, 2));
+    console.log('👶 Имя ребенка:', childName);
+    console.log('🏷️ Group ID:', groupId);
 
-    // 2. Удаляем ребенка из группы - ИЩЕМ ПО ИМЕНИ!
+    // 2. Удаляем ребенка из группы
     if (groupId) {
-      console.log(`Ищем ребенка в группе: ${groupId}`);
+      console.log('🔍 Ищем ребенка в группе:', groupId);
+
       const groupChildrenRef = db.ref(`groups/${groupId}/children`);
       const groupChildrenSnap = await groupChildrenRef.once('value');
       const groupChildren = groupChildrenSnap.val() || {};
 
+      console.log('👥 Дети в группе:', JSON.stringify(groupChildren, null, 2));
+
       // Ищем ребенка по имени в группе
       let foundGroupChildId = null;
       for (const [groupChildId, groupChildName] of Object.entries(groupChildren)) {
+        console.log(`🔎 Сравниваем: "${groupChildName}" vs "${childName}"`);
         if (groupChildName === childName) {
           foundGroupChildId = groupChildId;
+          console.log('✅ Найдено совпадение! Key:', foundGroupChildId);
           break;
         }
       }
 
       if (foundGroupChildId) {
-        console.log(`Удаляем ребенка из группы: ${foundGroupChildId}`);
+        console.log('🗑️ Удаляем ребенка из группы с key:', foundGroupChildId);
         await groupChildrenRef.child(foundGroupChildId).remove();
+        console.log('✅ Ребенок удален из группы');
       } else {
-        console.log(`Ребенок не найден в группе: ${childName}`);
+        console.log('❌ Ребенок не найден в группе по имени');
       }
+    } else {
+      console.log('ℹ️ У ребенка не указана группа');
     }
 
-    // 3. Удаляем файлы ребенка из S3 (если есть)
+    // 3. Удаляем файлы из S3
     const filesToDelete = [];
     if (child.avatarUrl) {
       filesToDelete.push(child.avatarUrl);
-      console.log(`Добавлен avatarUrl для удаления: ${child.avatarUrl}`);
+      console.log('📸 Avatar URL для удаления:', child.avatarUrl);
     }
 
     if (filesToDelete.length > 0) {
-      console.log(`Удаляем ${filesToDelete.length} файлов из S3`);
+      console.log('🗂️ Удаляем файлы из S3');
       await deleteFromS3(filesToDelete);
     }
 
     // 4. Удаляем ребенка из базы родителя
-    console.log("Удаляем ребенка из базы данных пользователя");
+    console.log('🗑️ Удаляем ребенка из базы пользователя');
     await childRef.remove();
+    console.log('✅ Ребенок удален из базы пользователя');
+
+    console.log('=== DELETE CHILD DEBUG END ===');
 
     res.json({
       success: true,
@@ -316,7 +331,7 @@ app.post('/deleteChild', async (req, res) => {
     });
 
   } catch (err) {
-    console.error("Ошибка при deleteChild:", err);
+    console.error('❌ Ошибка при deleteChild:', err);
     res.status(500).json({ error: "Ошибка при удалении ребенка: " + err.message });
   }
 });
