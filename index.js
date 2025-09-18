@@ -263,64 +263,67 @@ app.post('/deleteChild', async (req, res) => {
     }
 
     const child = childSnap.val();
-    const groupName = child.group; // Это название группы!
+    const groupName = child.group; // Это НАЗВАНИЕ группы!
     const childName = child.fullName.trim();
 
-    console.log('Имя ребенка:', `"${childName}"`);
-    console.log('Название группы:', groupName);
+    console.log('👶 Имя ребенка:', `"${childName}"`);
+    console.log('🏷️ Название группы:', groupName);
 
     // 2. Находим ID группы по названию
-    let actualGroupId = null;
+    let groupId = null;
     if (groupName) {
-      console.log('🔍 Ищем группу по названию:', groupName);
+      console.log('🔍 Ищем ID группы по названию:', groupName);
 
       const groupsRef = db.ref('groups');
       const groupsSnap = await groupsRef.once('value');
       const groups = groupsSnap.val() || {};
 
-      for (const [groupId, groupData] of Object.entries(groups)) {
+      console.log('Все группы:', JSON.stringify(groups, null, 2));
+
+      for (const [id, groupData] of Object.entries(groups)) {
+        console.log(`Проверяем группу: ${id} -> ${groupData.name}`);
         if (groupData.name === groupName) {
-          actualGroupId = groupId;
-          console.log('✅ Найдена группа! ID:', actualGroupId);
+          groupId = id;
+          console.log('✅ Найдена группа! ID:', groupId);
           break;
         }
       }
 
-      if (!actualGroupId) {
+      if (!groupId) {
         console.log('❌ Группа не найдена по названию:', groupName);
+        return res.status(404).json({ error: "Группа не найдена" });
       }
     }
 
-    // 3. Удаляем ребенка из группы (если нашли группу)
-    if (actualGroupId) {
-      console.log('🔍 Ищем ребенка в группе ID:', actualGroupId);
+    // 3. Удаляем ребенка из группы
+    console.log('🔍 Ищем ребенка в группе ID:', groupId);
 
-      const groupChildrenRef = db.ref(`groups/${actualGroupId}/children`);
-      const groupChildrenSnap = await groupChildrenRef.once('value');
-      const groupChildren = groupChildrenSnap.val() || {};
+    const groupChildrenRef = db.ref(`groups/${groupId}/children`);
+    const groupChildrenSnap = await groupChildrenRef.once('value');
+    const groupChildren = groupChildrenSnap.val() || {};
 
-      console.log('👥 Дети в группе:', JSON.stringify(groupChildren, null, 2));
+    console.log('👥 Дети в группе:', JSON.stringify(groupChildren, null, 2));
 
-      // Ищем ребенка по имени в группе
-      let foundGroupChildId = null;
-      for (const [groupChildId, groupChildName] of Object.entries(groupChildren)) {
-        const trimmedGroupName = groupChildName.trim();
-        console.log(`🔎 Сравниваем: "${trimmedGroupName}" vs "${childName}"`);
+    // Ищем ребенка по имени в группе
+    let foundGroupChildId = null;
+    for (const [groupChildId, groupChildName] of Object.entries(groupChildren)) {
+      const trimmedGroupName = groupChildName.trim();
+      console.log(`🔎 Сравниваем: "${trimmedGroupName}" vs "${childName}"`);
 
-        if (trimmedGroupName === childName) {
-          foundGroupChildId = groupChildId;
-          console.log('✅ Найдено совпадение! Key:', foundGroupChildId);
-          break;
-        }
+      if (trimmedGroupName === childName) {
+        foundGroupChildId = groupChildId;
+        console.log('✅ Найдено совпадение! Key:', foundGroupChildId);
+        break;
       }
+    }
 
-      if (foundGroupChildId) {
-        console.log('🗑️ Удаляем ребенка из группы');
-        await groupChildrenRef.child(foundGroupChildId).remove();
-        console.log('✅ Ребенок удален из группы');
-      } else {
-        console.log('ℹ️ Ребенок не найден в группе');
-      }
+    if (foundGroupChildId) {
+      console.log('🗑️ Удаляем ребенка из группы');
+      await groupChildrenRef.child(foundGroupChildId).remove();
+      console.log('✅ Ребенок удален из группы');
+    } else {
+      console.log('❌ Ребенок не найден в группе');
+      return res.status(404).json({ error: "Ребенок не найден в группе" });
     }
 
     // 4. Удаляем файлы из S3
