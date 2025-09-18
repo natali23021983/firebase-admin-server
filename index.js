@@ -127,6 +127,7 @@ async function deleteFromS3(urls) {
 }
 
 // === Удаление пользователя/ребёнка ===
+// === Удаление пользователя/ребёнка ===
 app.post('/deleteUserByName', async (req, res) => {
   const fullName = req.body.fullName?.trim().toLowerCase();
   if (!fullName) return res.status(400).send("fullName обязателен");
@@ -134,6 +135,7 @@ app.post('/deleteUserByName', async (req, res) => {
   try {
     const usersSnap = await db.ref('users').once('value');
     const users = usersSnap.val() || {};
+    let found = false;
 
     for (const [userId, user] of Object.entries(users)) {
       const name = user.name?.trim().toLowerCase();
@@ -141,70 +143,151 @@ app.post('/deleteUserByName', async (req, res) => {
 
       // Родитель
       if (name === fullName && role === 'родитель') {
+        found = true;
+
+        // 1. Удаляем детей из групп и S3
         if (user.children) {
-          for (const child of Object.values(user.children)) {
-            const groupId = child.group;
-            if (groupId) {
-              const gcRef = db.ref(`groups/${groupId}/children`);
-              const gcSnap = await gcRef.once('value');
-              const gc = gcSnap.val() || {};
-              for (const [gcId, full] of Object.entries(gc)) {
-                if (full === child.fullName) {
-                  await gcRef.child(gcId).remove();
-                  break;
-                }
-              }
+          const filesToDelete = [];
+
+          for (const [childId, child] of Object.entries(user.children)) {
+            // Удаляем из группы по childId (а не по имени!)
+            if (child.group) {
+              await db.ref(`groups/${child.group}/children/${childId}`).remove();
             }
+
+            // Собираем файлы для удаления из S3
+            if (child.avatarUrl) filesToDelete.push(child.avatarUrl);
+            // Добавьте другие файлы ребенка если есть
+          }
+
+          // Удаляем файлы из S3
+          if (filesToDelete.length > 0) {
+            await deleteFromS3(filesToDelete);
           }
         }
+
+        // 2. Удаляем пользователя из базы
         await db.ref(`users/${userId}`).remove();
-        await auth.deleteUser(userId);
+
+        // 3. Удаляем из Firebase Auth (с проверкой)
+        try {
+          await auth.getUser(userId);
+          await auth.deleteUser(userId);
+        } catch (authError) {
+          console.log("Пользователь не найден в Auth, пропускаем:", authError.message);
+        }
+
         return res.send("Родитель и его дети удалены.");
       }
 
       // Педагог
       if (name === fullName && role === 'педагог') {
+        found = true;
+
+        // Удаляем из всех групп
         const groupsSnap = await db.ref('groups').once('value');
         const groups = groupsSnap.val() || {};
+
         for (const [groupId, group] of Object.entries(groups)) {
           if (group.teachers?.[userId]) {
             await db.ref(`groups/${groupId}/teachers/${userId}`).remove();
           }
         }
+
+        // Удаляем пользователя
         await db.ref(`users/${userId}`).remove();
-        await auth.deleteUser(userId);
+
+        try {
+          await auth.getUser(userId);
+          await auth.deleteUser(userId);
+        } catch (authError) {
+          console.log("Пользователь не найден в Auth:", authError.message);
+        }
+
         return res.send("Педагог удалён.");
       }
 
-      // Ребёнок
+      // Отдельный ребенок (поиск ребенка по имени)
       if (user.children) {
         for (const [childId, child] of Object.entries(user.children)) {
           if (child.fullName?.trim().toLowerCase() === fullName) {
-            const groupId = child.group;
-            if (groupId) {
-              const gcRef = db.ref(`groups/${groupId}/children`);
-              const gcSnap = await gcRef.once('value');
-              const gc = gcSnap.val() || {};
-              for (const [gcId, full] of Object.entries(gc)) {
-                if (full === child.fullName) {
-                  await gcRef.child(gcId).remove();
-                  break;
-                }
-              }
+            found = true;
+
+            // Удаляем из группы
+            if (child.group) {
+              await db.ref(`groups/${child.group}/children/${childId}`).remove();
             }
+
+            // Удаляем файлы ребенка из S3
+            const filesToDelete = [];
+            if (child.avatarUrl) filesToDelete.push(child.avatarUrl);
+            if (filesToDelete.length > 0) {
+              await deleteFromS3(filesToDelete);
+            }
+
+            // Удаляем ребенка из пользователя
             await db.ref(`users/${userId}/children/${childId}`).remove();
+
             return res.send("Ребёнок удалён.");
           }
         }
       }
     }
 
-    res.status(404).send("Пользователь не найден.");
+    if (!found) {
+      res.status(404).send("Пользователь не найден.");
+    }
   } catch (err) {
     console.error("Ошибка при deleteUserByName:", err);
-    res.status(500).send("Ошибка при удалении.");
+    res.status(500).send("Ошибка при удалении: " + err.message);
   }
 });
+
+// === Новый endpoint для удаления только ребенка ===
+// В endpoint /deleteChild
+app.post('/deleteChild', async (req, res) => {
+  const { userId, childId } = req.body;
+
+  if (!userId || !childId) {
+    return res.status(400).send("userId и childId обязательны");
+  }
+
+  try {
+    // 1. Получаем данные ребенка
+    const childRef = db.ref(`users/${userId}/children/${childId}`);
+    const childSnap = await childRef.once('value');
+
+    if (!childSnap.exists()) {
+      return res.status(404).send("Ребенок не найден");
+    }
+
+    const child = childSnap.val();
+    const groupId = child.group;
+
+    // 2. Удаляем ребенка из группы (по childId!)
+    if (groupId) {
+      await db.ref(`groups/${groupId}/children/${childId}`).remove();
+    }
+
+    // 3. Удаляем файлы ребенка из S3 (если есть)
+    const filesToDelete = [];
+    if (child.avatarUrl) filesToDelete.push(child.avatarUrl);
+    // Добавьте другие файлы если есть
+
+    if (filesToDelete.length > 0) {
+      await deleteFromS3(filesToDelete);
+    }
+
+    // 4. Удаляем ребенка из базы родителя
+    await childRef.remove();
+
+    res.send(`Ребенок ${child.fullName} успешно удален`);
+  } catch (err) {
+    console.error("Ошибка при deleteChild:", err);
+    res.status(500).send("Ошибка при удалении ребенка");
+  }
+});
+
 
 // === Обновление email ===
 app.post("/update-user", async (req, res) => {
