@@ -780,7 +780,7 @@ app.post("/save-fcm-token", verifyToken, async (req, res) => {
   }
 });
 
-// === Отправка сообщения с автоматическим push-уведомлением ===
+
 // === Отправка сообщения с автоматическим push-уведомлением ===
 app.post("/send-message", verifyToken, async (req, res) => {
   try {
@@ -855,7 +855,6 @@ app.post("/send-message", verifyToken, async (req, res) => {
 });
 
 // === Функция отправки уведомления о новом сообщении ===
-// === Функция отправки уведомления о новом сообщении ===
 async function sendChatNotification({ chatId, senderId, senderName, message, messageType, fileUrl, fileName, isPrivate }) {
   try {
     console.log("🔔 Отправка уведомления о сообщении...");
@@ -915,41 +914,52 @@ async function sendChatNotification({ chatId, senderId, senderName, message, mes
     else if (messageType === "file") notificationBody = `📎 Файл: ${fileName || "файл"}`;
     else if (messageType === "audio") notificationBody = "🎵 Аудио";
 
-    // 4. Отправляем уведомления
-    for (const token of tokens) {
-      try {
-        const message = {
-          token,
-          notification: {
-            title: senderName,
-            body: notificationBody,
-          },
-          data: {
-            type: "chat",
-            senderName: senderName,
-            message: notificationBody,
-            chatId: chatId,
-            senderId: senderId,
-            timestamp: Date.now().toString()
-          },
-          android: {
-            priority: "high",
+// 4. Отправляем уведомления
+for (const token of tokens) {
+  try {
+    // Формируем data-only payload (без верхнего notification)
+    const message = {
+      token,
+      data: {
+        type: "chat",
+        senderName: String(senderName || ""),
+        message: String(notificationBody || ""),
+        chatId: String(chatId || ""),
+        senderId: String(senderId || ""),
+        timestamp: String(Date.now())
+      },
+      android: {
+        priority: "high",
+        notification: {
+          title: senderName,
+          body: notificationBody,
+          channelId: "chat_channel"
+        }
+      },
+      apns: {
+        payload: {
+          aps: {
+            contentAvailable: true
           }
-        };
-
-        const response = await admin.messaging().send(message);
-        console.log("✅ Пуш отправлен для токена:", token.substring(0, 10) + "...");
-
-      } catch (tokenError) {
-        console.error("❌ Ошибка отправки для токена:", token.substring(0, 10) + "...", tokenError.message);
-
-        // Удаляем невалидные токены
-        if (tokenError.code === 'messaging/registration-token-not-registered') {
-          await removeInvalidToken(token);
         }
       }
-    }
+    };
 
+    // Лог для отладки — увидеть реальные данные, отправляемые в FCM
+    console.log("📨 Отправляю FCM payload:", JSON.stringify(message.data, null, 2));
+
+    const response = await admin.messaging().send(message);
+    console.log("✅ Пуш отправлен для токена:", token.substring(0, 10) + "...", "| response:", response);
+
+  } catch (tokenError) {
+    console.error("❌ Ошибка отправки для токена:", token.substring(0, 10) + "...", tokenError.message);
+
+    // Удаляем невалидные токены
+    if (tokenError.code === "messaging/registration-token-not-registered") {
+      await removeInvalidToken(token);
+    }
+  }
+}
     console.log(`🎉 Уведомления отправлены для ${tokens.length} получателей`);
 
   } catch (err) {
