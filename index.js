@@ -919,52 +919,47 @@ async function sendChatNotification({ chatId, senderId, senderName, message, mes
     else if (messageType === "file") notificationBody = `📎 Файл: ${fileName || "файл"}`;
     else if (messageType === "audio") notificationBody = "🎵 Аудио";
 
-    // 4. Отправляем уведомления
-    for (const token of tokens) {
-      try {
-        // 🟢 А ЭТО — внутри цикла, перед отправкой
-        console.log("➡️ Отправка push для токена:", token.substring(0, 10) + "...");
+// 4. Отправляем уведомления
+for (const token of tokens) {
+  try {
+    console.log("➡️ Отправка push для токена:", token.substring(0, 10) + "...");
 
-        const messagePayload = {
-          token,
-          data: {
-            data: {
-              type: "chat",
-              senderName: String(senderName || ""),
-              message: String(notificationBody || ""),
-              chatId: String(chatId || ""),
-              senderId: String(senderId || ""),
-              timestamp: String(Date.now()),
-              displayName: String(senderName || ""),
-
-              // ✅ Чётко указываем, что это групповое сообщение, если чат не приватный
-              isGroup: isPrivate ? "false" : "true"
-            },
-
-          },
-          android: {
-            priority: "high"
-          },
-          apns: {
-            payload: {
-              aps: { contentAvailable: true }
-            }
-          }
-        };
-
-        console.log("📨 Отправляю FCM payload:", JSON.stringify(messagePayload.data, null, 2));
-        const response = await admin.messaging().send(messagePayload);
-
-        console.log("✅ Пуш отправлен для токена:", token.substring(0, 10) + "...", "| response:", response);
-
-      } catch (tokenError) {
-        console.error("❌ Ошибка отправки для токена:", token.substring(0, 10) + "...", tokenError.message);
-
-        if (tokenError.code === "messaging/registration-token-not-registered") {
-          await removeInvalidToken(token);
+    const messagePayload = {
+      token,
+      data: {
+        type: "chat",
+        senderName: String(senderName || ""),
+        message: String(notificationBody || ""),
+        chatId: String(chatId || ""),
+        senderId: String(senderId || ""),
+        timestamp: String(Date.now()),
+        displayName: String(senderName || ""),
+        isGroup: isPrivate ? "false" : "true" // ✅ всегда строка
+      },
+      android: {
+        priority: "high"
+      },
+      apns: {
+        payload: {
+          aps: { contentAvailable: true }
         }
       }
+    };
+
+    console.log("📨 Отправляю FCM payload:", JSON.stringify(messagePayload.data, null, 2));
+    const response = await admin.messaging().send(messagePayload);
+
+    console.log("✅ Пуш отправлен для токена:", token.substring(0, 10) + "...", "| response:", response);
+
+  } catch (tokenError) {
+    console.error("❌ Ошибка отправки для токена:", token.substring(0, 10) + "...", tokenError.message);
+
+    if (tokenError.code === "messaging/registration-token-not-registered") {
+      await removeInvalidToken(token);
     }
+  }
+}
+
 
     console.log(`🎉 Уведомления отправлены для ${tokens.length} получателей`);
 
