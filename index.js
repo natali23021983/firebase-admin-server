@@ -928,15 +928,19 @@ async function sendChatNotification({ chatId, senderId, senderName, message, mes
         const messagePayload = {
           token,
           data: {
-            type: "chat",
-            senderName: String(senderName || ""),
-            message: String(notificationBody || ""),
-            chatId: String(chatId || ""),
-            senderId: String(senderId || ""),
-            timestamp: String(Date.now()),
-            // ⚡ Добавляем "displayName" и "isGroup" для Android
-            displayName: String(senderName || ""),
-            isGroup: String(isPrivate ? "false" : "true")
+            data: {
+              type: "chat",
+              senderName: String(senderName || ""),
+              message: String(notificationBody || ""),
+              chatId: String(chatId || ""),
+              senderId: String(senderId || ""),
+              timestamp: String(Date.now()),
+              displayName: String(senderName || ""),
+
+              // ✅ Чётко указываем, что это групповое сообщение, если чат не приватный
+              isGroup: isPrivate ? "false" : "true"
+            },
+
           },
           android: {
             priority: "high"
