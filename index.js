@@ -703,49 +703,56 @@ app.post('/generate-upload-url', verifyToken, async (req, res) => {
    }
  }
 
-// === Отправка push-уведомления через FCM ===
-app.post("/send-notification", async (req, res) => {
-  const { token, title, body, data = {} } = req.body;
+ // ✅ Функция для определения типа чата по chatId
+ async function isPrivateChatId(chatId) {
+   try {
+     // 1. Если chatId содержит '_' - скорее всего приватный
+     if (chatId.includes('_')) {
+       console.log("🔍 ChatId содержит '_' - проверяем приватный чат");
 
-  if (!token || !title || !body) {
-    return res.status(400).json({ error: "token, title и body обязательны" });
-  }
+       // Проверяем существует ли такой приватный чат
+       const privateChatRef = db.ref(`chats/private/${chatId}`);
+       const privateSnap = await privateChatRef.once('value');
 
-  try {
-    console.log("📤 Отправка push-уведомления...");
-    console.log("🔑 Token:", token);
-    console.log("📩 Title:", title);
-    console.log("📝 Body:", body);
-    console.log("📊 Data:", data);
+       if (privateSnap.exists()) {
+         console.log("✅ Найден приватный чат с ID:", chatId);
+         return true;
+       }
 
-    const message = {
-      token,
-      notification: {
-        title,
-        body,
-      },
-      data: Object.fromEntries(
-        Object.entries(data).map(([k, v]) => [k, String(v)])
-      ), // Firebase требует строки
-      android: {
-        priority: "high",
-      },
-      apns: {
-        payload: {
-          aps: { sound: "default" }
-        }
-      }
-    };
+       // Если не нашли приватный, проверяем может это групповой с '_' в ID
+       const groupChatRef = db.ref(`chats/groups/${chatId}`);
+       const groupSnap = await groupChatRef.once('value');
 
-    const response = await admin.messaging().send(message);
-    console.log("✅ Уведомление отправлено:", response);
+       if (groupSnap.exists()) {
+         console.log("✅ Найден групповой чат с ID (содержит '_'):", chatId);
+         return false;
+       }
 
-    res.json({ success: true, messageId: response });
-  } catch (err) {
-    console.error("❌ Ошибка отправки уведомления:", err);
-    res.status(500).json({ error: "Ошибка отправки: " + err.message });
-  }
-});
+       // Если не нашли ни там ни там - считаем приватным по формату
+       console.log("⚠️ Чат не найден, но ID содержит '_' - считаем приватным");
+       return true;
+     }
+
+     // 2. Если нет '_' - проверяем групповой чат
+     const groupChatRef = db.ref(`chats/groups/${chatId}`);
+     const groupSnap = await groupChatRef.once('value');
+
+     if (groupSnap.exists()) {
+       console.log("✅ Найден групповой чат с ID:", chatId);
+       return false;
+     }
+
+     // 3. Если ничего не нашли - ошибка
+     console.log("❌ Чат не найден ни в приватных, ни в групповых:", chatId);
+     return false;
+
+   } catch (error) {
+     console.error("❌ Ошибка определения типа чата:", error);
+     // В случае ошибки используем эвристику: если есть '_' - приватный
+     return chatId.includes('_');
+   }
+ }
+
 
 // === Сохранение FCM токена пользователя ===
 app.post("/save-fcm-token", verifyToken, async (req, res) => {
@@ -774,6 +781,7 @@ app.post("/save-fcm-token", verifyToken, async (req, res) => {
 });
 
 // === Отправка сообщения с автоматическим push-уведомлением ===
+// === Отправка сообщения с автоматическим push-уведомлением ===
 app.post("/send-message", verifyToken, async (req, res) => {
   try {
     const { chatId, message, messageType = "text", fileUrl, fileName } = req.body;
@@ -785,34 +793,44 @@ app.post("/send-message", verifyToken, async (req, res) => {
 
     console.log("💬 Новое сообщение от:", senderId, "в чат:", chatId);
 
-    // 1. Сохраняем сообщение в базу
-    const messageId = uuidv4();
-    const messageData = {
-      id: messageId,
-      senderId,
-      message,
-      messageType,
-      timestamp: Date.now(),
-      ...(fileUrl && { fileUrl, fileName })
-    };
-
-    // Определяем тип чата и сохраняем
-    let chatRef;
-    if (chatId.startsWith('private_')) {
-      chatRef = db.ref(`privateChats/${chatId}/messages/${messageId}`);
-    } else {
-      chatRef = db.ref(`groupChats/${chatId}/messages/${messageId}`);
-    }
-
-    await chatRef.set(messageData);
-    console.log("✅ Сообщение сохранено в базу");
-
-    // 2. Получаем данные отправителя
+    // 1. Получаем данные отправителя
     const senderSnap = await db.ref(`users/${senderId}`).once('value');
     const sender = senderSnap.val();
     const senderName = sender?.name || "Неизвестный";
 
-    // 3. Получаем FCM токен получателя и отправляем пуш
+    // 2. Сохраняем сообщение в базу
+    const messageId = uuidv4();
+    const messageData = {
+      id: messageId,
+      senderId,
+      senderName,
+      text: message,
+      timestamp: Date.now(),
+      fileUrl: fileUrl || null,
+      fileType: messageType,
+      fileName: fileName || null
+    };
+
+    // 3. ✅ ОПРЕДЕЛЯЕМ ТИП ЧАТА И СОХРАНЯЕМ В ПРАВИЛЬНЫЙ ПУТЬ
+    let chatRef;
+
+    // Определяем тип чата по chatId
+    const isPrivateChat = await isPrivateChatId(chatId);
+
+    if (isPrivateChat) {
+      // ✅ ПРИВАТНЫЙ ЧАТ: chats/private/chatId/messages
+      chatRef = db.ref(`chats/private/${chatId}/messages/${messageId}`);
+      console.log("🔒 Сохраняем в ПРИВАТНЫЙ чат:", chatId);
+    } else {
+      // ✅ ГРУППОВОЙ ЧАТ: chats/groups/chatId/messages
+      chatRef = db.ref(`chats/groups/${chatId}/messages/${messageId}`);
+      console.log("👥 Сохраняем в ГРУППОВОЙ чат:", chatId);
+    }
+
+    await chatRef.set(messageData);
+    console.log("✅ Сообщение сохранено в базу по пути:", chatRef.toString());
+
+    // 4. Отправляем уведомления
     await sendChatNotification({
       chatId,
       senderId,
@@ -820,7 +838,8 @@ app.post("/send-message", verifyToken, async (req, res) => {
       message,
       messageType,
       fileUrl,
-      fileName
+      fileName,
+      isPrivate: isPrivateChat // передаем тип чата
     });
 
     res.json({
@@ -836,19 +855,21 @@ app.post("/send-message", verifyToken, async (req, res) => {
 });
 
 // === Функция отправки уведомления о новом сообщении ===
-async function sendChatNotification({ chatId, senderId, senderName, message, messageType, fileUrl, fileName }) {
+// === Функция отправки уведомления о новом сообщении ===
+async function sendChatNotification({ chatId, senderId, senderName, message, messageType, fileUrl, fileName, isPrivate }) {
   try {
     console.log("🔔 Отправка уведомления о сообщении...");
 
     // 1. Определяем получателей
     let recipientIds = [];
 
-    if (chatId.startsWith('private_')) {
-      // Приватный чат - получатель это второй участник
+    if (isPrivate) {
+      // ✅ ПРИВАТНЫЙ ЧАТ - получатель это второй участник
       const parts = chatId.split('_');
       recipientIds = parts.filter(id => id !== senderId);
+      console.log('🔒 Приватный чат, получатели:', recipientIds);
     } else {
-      // Групповой чат - все участники кроме отправителя
+      // ✅ ГРУППОВОЙ ЧАТ - все участники кроме отправителя
       const groupSnap = await db.ref(`groups/${chatId}`).once('value');
       const group = groupSnap.val();
 
@@ -859,6 +880,7 @@ async function sendChatNotification({ chatId, senderId, senderName, message, mes
 
         // Убираем отправителя
         recipientIds = recipientIds.filter(id => id !== senderId);
+        console.log('👥 Групповой чат, получатели:', recipientIds);
       }
     }
 
@@ -866,8 +888,6 @@ async function sendChatNotification({ chatId, senderId, senderName, message, mes
       console.log("⚠️ Нет получателей для уведомления");
       return;
     }
-
-    console.log("👥 Получатели:", recipientIds);
 
     // 2. Получаем FCM токены получателей
     const tokens = [];
@@ -891,10 +911,11 @@ async function sendChatNotification({ chatId, senderId, senderName, message, mes
     // 3. Формируем текст уведомления
     let notificationBody = message;
     if (messageType === "image") notificationBody = "📷 Фото";
-    if (messageType === "file") notificationBody = `📎 Файл: ${fileName || "файл"}`;
-    if (messageType === "audio") notificationBody = "🎵 Аудио";
+    else if (messageType === "video") notificationBody = "🎥 Видео";
+    else if (messageType === "file") notificationBody = `📎 Файл: ${fileName || "файл"}`;
+    else if (messageType === "audio") notificationBody = "🎵 Аудио";
 
-    // 4. Отправляем уведомление каждому получателю
+    // 4. Отправляем уведомления
     for (const token of tokens) {
       try {
         const message = {
@@ -913,23 +934,16 @@ async function sendChatNotification({ chatId, senderId, senderName, message, mes
           },
           android: {
             priority: "high",
-          },
-          apns: {
-            payload: {
-              aps: {
-                sound: "default",
-                badge: 1
-              }
-            }
           }
         };
 
         const response = await admin.messaging().send(message);
-        console.log("✅ Пуш отправлен для токена:", token.substring(0, 10) + "...", "ID:", response);
+        console.log("✅ Пуш отправлен для токена:", token.substring(0, 10) + "...");
+
       } catch (tokenError) {
         console.error("❌ Ошибка отправки для токена:", token.substring(0, 10) + "...", tokenError.message);
 
-        // Если токен невалидный, удаляем его из базы
+        // Удаляем невалидные токены
         if (tokenError.code === 'messaging/registration-token-not-registered') {
           await removeInvalidToken(token);
         }
