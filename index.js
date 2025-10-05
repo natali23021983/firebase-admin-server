@@ -925,7 +925,7 @@ async function sendChatNotification({ chatId, senderId, senderName, message, mes
         // 🟢 А ЭТО — внутри цикла, перед отправкой
         console.log("➡️ Отправка push для токена:", token.substring(0, 10) + "...");
 
-        const message = {
+        const messagePayload = {
           token,
           data: {
             type: "chat",
@@ -933,28 +933,24 @@ async function sendChatNotification({ chatId, senderId, senderName, message, mes
             message: String(notificationBody || ""),
             chatId: String(chatId || ""),
             senderId: String(senderId || ""),
-            timestamp: String(Date.now())
+            timestamp: String(Date.now()),
+            // ⚡ Добавляем "displayName" и "isGroup" для Android
+            displayName: String(senderName || ""),
+            isGroup: String(isPrivate ? "false" : "true")
           },
           android: {
-            priority: "high",
-            notification: {
-              title: senderName,
-              body: notificationBody,
-              channelId: "chat_channel"
-            }
+            priority: "high"
           },
           apns: {
             payload: {
-              aps: {
-                contentAvailable: true
-              }
+              aps: { contentAvailable: true }
             }
           }
         };
 
-        console.log("📨 Отправляю FCM payload:", JSON.stringify(message.data, null, 2));
+        console.log("📨 Отправляю FCM payload:", JSON.stringify(messagePayload.data, null, 2));
+        const response = await admin.messaging().send(messagePayload);
 
-        const response = await admin.messaging().send(message);
         console.log("✅ Пуш отправлен для токена:", token.substring(0, 10) + "...", "| response:", response);
 
       } catch (tokenError) {
