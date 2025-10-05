@@ -127,7 +127,6 @@ async function deleteFromS3(urls) {
 }
 
 // === Удаление пользователя/ребёнка ===
-// === Удаление пользователя/ребёнка ===
 app.post('/deleteUserByName', async (req, res) => {
   const fullName = req.body.fullName?.trim().toLowerCase();
   if (!fullName) return res.status(400).send("fullName обязателен");
@@ -748,6 +747,222 @@ app.post("/send-notification", async (req, res) => {
   }
 });
 
+// === Сохранение FCM токена пользователя ===
+app.post("/save-fcm-token", verifyToken, async (req, res) => {
+  try {
+    const { fcmToken } = req.body;
+    const userId = req.user.uid;
+
+    if (!fcmToken) {
+      return res.status(400).json({ error: "fcmToken обязателен" });
+    }
+
+    console.log("💾 Сохранение FCM токена для пользователя:", userId);
+
+    await db.ref(`users/${userId}`).update({
+      fcmToken,
+      fcmTokenUpdated: Date.now()
+    });
+
+    console.log("✅ FCM токен сохранен");
+    res.json({ success: true });
+
+  } catch (err) {
+    console.error("❌ Ошибка сохранения FCM токена:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// === Отправка сообщения с автоматическим push-уведомлением ===
+app.post("/send-message", verifyToken, async (req, res) => {
+  try {
+    const { chatId, message, messageType = "text", fileUrl, fileName } = req.body;
+    const senderId = req.user.uid;
+
+    if (!chatId || !message) {
+      return res.status(400).json({ error: "chatId и message обязательны" });
+    }
+
+    console.log("💬 Новое сообщение от:", senderId, "в чат:", chatId);
+
+    // 1. Сохраняем сообщение в базу
+    const messageId = uuidv4();
+    const messageData = {
+      id: messageId,
+      senderId,
+      message,
+      messageType,
+      timestamp: Date.now(),
+      ...(fileUrl && { fileUrl, fileName })
+    };
+
+    // Определяем тип чата и сохраняем
+    let chatRef;
+    if (chatId.startsWith('private_')) {
+      chatRef = db.ref(`privateChats/${chatId}/messages/${messageId}`);
+    } else {
+      chatRef = db.ref(`groupChats/${chatId}/messages/${messageId}`);
+    }
+
+    await chatRef.set(messageData);
+    console.log("✅ Сообщение сохранено в базу");
+
+    // 2. Получаем данные отправителя
+    const senderSnap = await db.ref(`users/${senderId}`).once('value');
+    const sender = senderSnap.val();
+    const senderName = sender?.name || "Неизвестный";
+
+    // 3. Получаем FCM токен получателя и отправляем пуш
+    await sendChatNotification({
+      chatId,
+      senderId,
+      senderName,
+      message,
+      messageType,
+      fileUrl,
+      fileName
+    });
+
+    res.json({
+      success: true,
+      messageId,
+      timestamp: messageData.timestamp
+    });
+
+  } catch (err) {
+    console.error("❌ Ошибка отправки сообщения:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// === Функция отправки уведомления о новом сообщении ===
+async function sendChatNotification({ chatId, senderId, senderName, message, messageType, fileUrl, fileName }) {
+  try {
+    console.log("🔔 Отправка уведомления о сообщении...");
+
+    // 1. Определяем получателей
+    let recipientIds = [];
+
+    if (chatId.startsWith('private_')) {
+      // Приватный чат - получатель это второй участник
+      const parts = chatId.split('_');
+      recipientIds = parts.filter(id => id !== senderId);
+    } else {
+      // Групповой чат - все участники кроме отправителя
+      const groupSnap = await db.ref(`groups/${chatId}`).once('value');
+      const group = groupSnap.val();
+
+      if (group) {
+        // Собираем всех участников группы
+        if (group.teachers) recipientIds.push(...Object.keys(group.teachers));
+        if (group.parents) recipientIds.push(...Object.keys(group.parents));
+
+        // Убираем отправителя
+        recipientIds = recipientIds.filter(id => id !== senderId);
+      }
+    }
+
+    if (recipientIds.length === 0) {
+      console.log("⚠️ Нет получателей для уведомления");
+      return;
+    }
+
+    console.log("👥 Получатели:", recipientIds);
+
+    // 2. Получаем FCM токены получателей
+    const tokens = [];
+    for (const recipientId of recipientIds) {
+      const userSnap = await db.ref(`users/${recipientId}`).once('value');
+      const user = userSnap.val();
+
+      if (user && user.fcmToken) {
+        tokens.push(user.fcmToken);
+        console.log("✅ Найден токен для:", recipientId);
+      } else {
+        console.log("⚠️ Нет FCM токена для:", recipientId);
+      }
+    }
+
+    if (tokens.length === 0) {
+      console.log("⚠️ Нет активных FCM токенов для отправки");
+      return;
+    }
+
+    // 3. Формируем текст уведомления
+    let notificationBody = message;
+    if (messageType === "image") notificationBody = "📷 Фото";
+    if (messageType === "file") notificationBody = `📎 Файл: ${fileName || "файл"}`;
+    if (messageType === "audio") notificationBody = "🎵 Аудио";
+
+    // 4. Отправляем уведомление каждому получателю
+    for (const token of tokens) {
+      try {
+        const message = {
+          token,
+          notification: {
+            title: senderName,
+            body: notificationBody,
+          },
+          data: {
+            type: "chat",
+            senderName: senderName,
+            message: notificationBody,
+            chatId: chatId,
+            senderId: senderId,
+            timestamp: Date.now().toString()
+          },
+          android: {
+            priority: "high",
+          },
+          apns: {
+            payload: {
+              aps: {
+                sound: "default",
+                badge: 1
+              }
+            }
+          }
+        };
+
+        const response = await admin.messaging().send(message);
+        console.log("✅ Пуш отправлен для токена:", token.substring(0, 10) + "...", "ID:", response);
+      } catch (tokenError) {
+        console.error("❌ Ошибка отправки для токена:", token.substring(0, 10) + "...", tokenError.message);
+
+        // Если токен невалидный, удаляем его из базы
+        if (tokenError.code === 'messaging/registration-token-not-registered') {
+          await removeInvalidToken(token);
+        }
+      }
+    }
+
+    console.log(`🎉 Уведомления отправлены для ${tokens.length} получателей`);
+
+  } catch (err) {
+    console.error("❌ Ошибка в sendChatNotification:", err);
+  }
+}
+
+// === Удаление невалидного FCM токена ===
+async function removeInvalidToken(invalidToken) {
+  try {
+    console.log("🗑️ Удаление невалидного FCM токена:", invalidToken.substring(0, 10) + "...");
+
+    // Ищем пользователя с этим токеном
+    const usersSnap = await db.ref('users').once('value');
+    const users = usersSnap.val() || {};
+
+    for (const [userId, user] of Object.entries(users)) {
+      if (user.fcmToken === invalidToken) {
+        await db.ref(`users/${userId}`).update({ fcmToken: null });
+        console.log("✅ Токен удален у пользователя:", userId);
+        break;
+      }
+    }
+  } catch (err) {
+    console.error("❌ Ошибка удаления токена:", err);
+  }
+}
 
 // === Проверка сервера ===
 app.get("/", (req, res) => res.send("Server is running"));
