@@ -858,26 +858,27 @@ app.post("/send-message", verifyToken, async (req, res) => {
 async function sendChatNotification({ chatId, senderId, senderName, message, messageType, fileUrl, fileName, isPrivate }) {
   try {
     console.log("🔔 Отправка уведомления о сообщении...");
+    console.log("chatId:", chatId);
+    console.log("senderId:", senderId);
+    console.log("senderName:", senderName);
+    console.log("message:", message);
+    console.log("messageType:", messageType);
+    console.log("isPrivate:", isPrivate);
 
     // 1. Определяем получателей
     let recipientIds = [];
 
     if (isPrivate) {
-      // ✅ ПРИВАТНЫЙ ЧАТ - получатель это второй участник
       const parts = chatId.split('_');
       recipientIds = parts.filter(id => id !== senderId);
       console.log('🔒 Приватный чат, получатели:', recipientIds);
     } else {
-      // ✅ ГРУППОВОЙ ЧАТ - все участники кроме отправителя
       const groupSnap = await db.ref(`groups/${chatId}`).once('value');
       const group = groupSnap.val();
 
       if (group) {
-        // Собираем всех участников группы
         if (group.teachers) recipientIds.push(...Object.keys(group.teachers));
         if (group.parents) recipientIds.push(...Object.keys(group.parents));
-
-        // Убираем отправителя
         recipientIds = recipientIds.filter(id => id !== senderId);
         console.log('👥 Групповой чат, получатели:', recipientIds);
       }
@@ -907,6 +908,10 @@ async function sendChatNotification({ chatId, senderId, senderName, message, mes
       return;
     }
 
+    // 🟢 ВОТ СЮДА вставляем лог перед циклом
+    console.log("📱 Кол-во токенов:", tokens.length);
+    console.log("Список токенов:", tokens);
+
     // 3. Формируем текст уведомления
     let notificationBody = message;
     if (messageType === "image") notificationBody = "📷 Фото";
@@ -914,58 +919,60 @@ async function sendChatNotification({ chatId, senderId, senderName, message, mes
     else if (messageType === "file") notificationBody = `📎 Файл: ${fileName || "файл"}`;
     else if (messageType === "audio") notificationBody = "🎵 Аудио";
 
-// 4. Отправляем уведомления
-for (const token of tokens) {
-  try {
-    // Формируем data-only payload (без верхнего notification)
-    const message = {
-      token,
-      data: {
-        type: "chat",
-        senderName: String(senderName || ""),
-        message: String(notificationBody || ""),
-        chatId: String(chatId || ""),
-        senderId: String(senderId || ""),
-        timestamp: String(Date.now())
-      },
-      android: {
-        priority: "high",
-        notification: {
-          title: senderName,
-          body: notificationBody,
-          channelId: "chat_channel"
-        }
-      },
-      apns: {
-        payload: {
-          aps: {
-            contentAvailable: true
+    // 4. Отправляем уведомления
+    for (const token of tokens) {
+      try {
+        // 🟢 А ЭТО — внутри цикла, перед отправкой
+        console.log("➡️ Отправка push для токена:", token.substring(0, 10) + "...");
+
+        const message = {
+          token,
+          data: {
+            type: "chat",
+            senderName: String(senderName || ""),
+            message: String(notificationBody || ""),
+            chatId: String(chatId || ""),
+            senderId: String(senderId || ""),
+            timestamp: String(Date.now())
+          },
+          android: {
+            priority: "high",
+            notification: {
+              title: senderName,
+              body: notificationBody,
+              channelId: "chat_channel"
+            }
+          },
+          apns: {
+            payload: {
+              aps: {
+                contentAvailable: true
+              }
+            }
           }
+        };
+
+        console.log("📨 Отправляю FCM payload:", JSON.stringify(message.data, null, 2));
+
+        const response = await admin.messaging().send(message);
+        console.log("✅ Пуш отправлен для токена:", token.substring(0, 10) + "...", "| response:", response);
+
+      } catch (tokenError) {
+        console.error("❌ Ошибка отправки для токена:", token.substring(0, 10) + "...", tokenError.message);
+
+        if (tokenError.code === "messaging/registration-token-not-registered") {
+          await removeInvalidToken(token);
         }
       }
-    };
-
-    // Лог для отладки — увидеть реальные данные, отправляемые в FCM
-    console.log("📨 Отправляю FCM payload:", JSON.stringify(message.data, null, 2));
-
-    const response = await admin.messaging().send(message);
-    console.log("✅ Пуш отправлен для токена:", token.substring(0, 10) + "...", "| response:", response);
-
-  } catch (tokenError) {
-    console.error("❌ Ошибка отправки для токена:", token.substring(0, 10) + "...", tokenError.message);
-
-    // Удаляем невалидные токены
-    if (tokenError.code === "messaging/registration-token-not-registered") {
-      await removeInvalidToken(token);
     }
-  }
-}
+
     console.log(`🎉 Уведомления отправлены для ${tokens.length} получателей`);
 
   } catch (err) {
-    console.error("❌ Ошибка в sendChatNotification:", err);
+    console.error("❌ Ошибка в sendChatNotification:", err.message, err.stack);
   }
 }
+
 
 // === Удаление невалидного FCM токена ===
 async function removeInvalidToken(invalidToken) {
