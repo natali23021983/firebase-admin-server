@@ -704,6 +704,49 @@ app.post('/generate-upload-url', verifyToken, async (req, res) => {
    }
  }
 
+// === Отправка push-уведомления через FCM ===
+app.post("/send-notification", async (req, res) => {
+  const { token, title, body, data = {} } = req.body;
+
+  if (!token || !title || !body) {
+    return res.status(400).json({ error: "token, title и body обязательны" });
+  }
+
+  try {
+    console.log("📤 Отправка push-уведомления...");
+    console.log("🔑 Token:", token);
+    console.log("📩 Title:", title);
+    console.log("📝 Body:", body);
+    console.log("📊 Data:", data);
+
+    const message = {
+      token,
+      notification: {
+        title,
+        body,
+      },
+      data: Object.fromEntries(
+        Object.entries(data).map(([k, v]) => [k, String(v)])
+      ), // Firebase требует строки
+      android: {
+        priority: "high",
+      },
+      apns: {
+        payload: {
+          aps: { sound: "default" }
+        }
+      }
+    };
+
+    const response = await admin.messaging().send(message);
+    console.log("✅ Уведомление отправлено:", response);
+
+    res.json({ success: true, messageId: response });
+  } catch (err) {
+    console.error("❌ Ошибка отправки уведомления:", err);
+    res.status(500).json({ error: "Ошибка отправки: " + err.message });
+  }
+});
 
 
 // === Проверка сервера ===
