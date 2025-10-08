@@ -854,119 +854,280 @@ app.post("/send-message", verifyToken, async (req, res) => {
   }
 });
 
-// === Функция отправки уведомления о новом сообщении ===
-async function sendChatNotification({ chatId, senderId, senderName, message, messageType, fileUrl, fileName, isPrivate }) {
-  try {
-    console.log("🔔 Отправка уведомления о сообщении...");
-    console.log("chatId:", chatId);
-    console.log("senderId:", senderId);
-    console.log("senderName:", senderName);
-    console.log("message:", message);
-    console.log("messageType:", messageType);
-    console.log("isPrivate:", isPrivate);
+/// === Удаление невалидного FCM токена ===
+ async function removeInvalidToken(invalidToken) {
+   try {
+     console.log("🗑️ Удаление невалидного FCM токена:", invalidToken.substring(0, 10) + "...");
 
-    // 1. Определяем получателей
-    let recipientIds = [];
+     // Ищем пользователя с этим токеном
+     const usersSnap = await db.ref('users').once('value');
+     const users = usersSnap.val() || {};
 
-    if (isPrivate) {
-      const parts = chatId.split('_');
-      recipientIds = parts.filter(id => id !== senderId);
-      console.log('🔒 Приватный чат, получатели:', recipientIds);
-    } else {
-      const groupSnap = await db.ref(`groups/${chatId}`).once('value');
-      const group = groupSnap.val();
+     for (const [userId, user] of Object.entries(users)) {
+       if (user.fcmToken === invalidToken) {
+         await db.ref(`users/${userId}`).update({ fcmToken: null });
+         console.log("✅ Токен удален у пользователя:", userId);
+         break;
+       }
+     }
+   } catch (err) {
+     console.error("❌ Ошибка удаления токена:", err);
+   }
+ }
 
-      if (group) {
-        if (group.teachers) recipientIds.push(...Object.keys(group.teachers));
-        if (group.parents) recipientIds.push(...Object.keys(group.parents));
-        recipientIds = recipientIds.filter(id => id !== senderId);
-        console.log('👥 Групповой чат, получатели:', recipientIds);
-      }
-    }
+ // === Получение названия группы ===
+ async function getGroupName(groupId) {
+   try {
+     const groupSnap = await db.ref(`groups/${groupId}/name`).once('value');
+     return groupSnap.val() || `Группа ${groupId}`;
+   } catch (error) {
+     console.error("❌ Ошибка получения названия группы:", error);
+     return `Группа ${groupId}`;
+   }
+ }
 
-    if (recipientIds.length === 0) {
-      console.log("⚠️ Нет получателей для уведомления");
-      return;
-    }
+ // === Поиск родителей по ID группы ===
+ async function findParentsByGroupId(groupId) {
+   try {
+     console.log("🔍 Поиск родителей для группы:", groupId);
 
-    // 2. Получаем FCM токены получателей
-    const tokens = [];
-    for (const recipientId of recipientIds) {
-      const userSnap = await db.ref(`users/${recipientId}`).once('value');
-      const user = userSnap.val();
+     // 1. Получаем детей из группы
+     const groupSnap = await db.ref(`groups/${groupId}/children`).once('value');
+     const childrenInGroup = groupSnap.val() || {};
+     const childIds = Object.keys(childrenInGroup);
 
-      if (user && user.fcmToken) {
-        tokens.push(user.fcmToken);
-        console.log("✅ Найден токен для:", recipientId);
-      } else {
-        console.log("⚠️ Нет FCM токена для:", recipientId);
-      }
-    }
+     console.log("👶 Дети в группе:", childIds);
 
-    if (tokens.length === 0) {
-      console.log("⚠️ Нет активных FCM токенов для отправки");
-      return;
-    }
+     if (childIds.length === 0) {
+       console.log("⚠️ В группе нет детей");
+       return [];
+     }
 
-    // 🟢 ВОТ СЮДА вставляем лог перед циклом
-    console.log("📱 Кол-во токенов:", tokens.length);
-    console.log("Список токенов:", tokens);
+     // 2. Ищем родителей этих детей
+     const usersSnap = await db.ref('users').once('value');
+     const users = usersSnap.val() || {};
+     const parents = [];
+     const foundParentIds = new Set(); // Чтобы избежать дубликатов
 
-    // 3. Формируем текст уведомления
-    let notificationBody = message;
-    if (messageType === "image") notificationBody = "📷 Фото";
-    else if (messageType === "video") notificationBody = "🎥 Видео";
-    else if (messageType === "file") notificationBody = `📎 Файл: ${fileName || "файл"}`;
-    else if (messageType === "audio") notificationBody = "🎵 Аудио";
+     for (const [userId, user] of Object.entries(users)) {
+       // Проверяем только пользователей с ролью "Родитель"
+       if (user.role === "Родитель" && user.children) {
 
-// 4. Отправляем уведомления
-for (const token of tokens) {
-  try {
-    console.log("➡️ Отправка push для токена:", token.substring(0, 10) + "...");
+         // Проверяем, есть ли у этого родителя хотя бы один ребенок из группы
+         for (const childId of childIds) {
+           if (user.children[childId] && !foundParentIds.has(userId)) {
+             parents.push({
+               userId,
+               name: user.name || "Родитель",
+               fcmToken: user.fcmToken || null
+             });
+             foundParentIds.add(userId);
+             console.log("✅ Найден родитель:", user.name, "для ребенка:", childId);
+             break; // Переходим к следующему родителю
+           }
+         }
+       }
+     }
 
-    const messagePayload = {
-      token,
-      data: {
-        type: "chat",
-        senderName: String(senderName || ""),
-        message: String(notificationBody || ""),
-        chatId: String(chatId || ""),
-        senderId: String(senderId || ""),
-        timestamp: String(Date.now()),
-        displayName: String(senderName || ""),
-        isGroup: isPrivate ? "false" : "true" // ✅ всегда строка
-      },
-      android: {
-        priority: "high"
-      },
-      apns: {
-        payload: {
-          aps: { contentAvailable: true }
-        }
-      }
-    };
+     console.log(`👨‍👩‍👧‍👦 Всего найдено родителей: ${parents.length}`);
+     return parents;
 
-    console.log("📨 Отправляю FCM payload:", JSON.stringify(messagePayload.data, null, 2));
-    const response = await admin.messaging().send(messagePayload);
+   } catch (error) {
+     console.error("❌ Ошибка поиска родителей по группе:", error);
+     return [];
+   }
+ }
 
-    console.log("✅ Пуш отправлен для токена:", token.substring(0, 10) + "...", "| response:", response);
+ // === Отправка уведомления о новом событии ===
+ app.post("/send-event-notification", verifyToken, async (req, res) => {
+   try {
+     const {
+       groupId,
+       groupName,
+       eventId,
+       title,
+       time,
+       place,
+       comments,
+       date
+     } = req.body;
 
-  } catch (tokenError) {
-    console.error("❌ Ошибка отправки для токена:", token.substring(0, 10) + "...", tokenError.message);
+     // Валидация обязательных полей
+     if (!groupId || !eventId || !title) {
+       return res.status(400).json({
+         error: "groupId, eventId, title обязательны"
+       });
+     }
 
-    if (tokenError.code === "messaging/registration-token-not-registered") {
-      await removeInvalidToken(token);
-    }
-  }
-}
+     console.log("🔔 Запрос на отправку уведомления о событии:");
+     console.log("   - Группа:", groupId, groupName);
+     console.log("   - Событие:", title, time);
 
+     // Получаем настоящее название группы
+     const actualGroupName = await getGroupName(groupId);
+     console.log("   - Название группы:", actualGroupName);
 
-    console.log(`🎉 Уведомления отправлены для ${tokens.length} получателей`);
+     // 1. Находим родителей группы
+     const parents = await findParentsByGroupId(groupId);
 
-  } catch (err) {
-    console.error("❌ Ошибка в sendChatNotification:", err.message, err.stack);
-  }
-}
+     if (parents.length === 0) {
+       console.log("⚠️ Не найдены родители для группы:", groupId);
+       return res.json({
+         success: true,
+         message: "Событие создано, но родители не найдены"
+       });
+     }
+
+     console.log("👨‍👩‍👧‍👦 Найдены родители:", parents.length);
+
+     // 2. Получаем FCM токены родителей
+     const tokens = [];
+     for (const parent of parents) {
+       if (parent.fcmToken) {
+         tokens.push(parent.fcmToken);
+         console.log("✅ Токен родителя:", parent.userId, parent.name);
+       }
+     }
+
+     if (tokens.length === 0) {
+       console.log("⚠️ Нет активных FCM токенов у родителей");
+       return res.json({
+         success: true,
+         message: "Событие создано, но нет активных токенов"
+       });
+     }
+
+     // 3. Формируем текст уведомления
+     const notificationBody = formatEventNotification(title, time, place, actualGroupName);
+
+     // 4. Отправляем уведомления
+     await sendEventNotifications({
+       tokens,
+       groupId,
+       groupName: actualGroupName,
+       eventId,
+       title,
+       time,
+       place,
+       comments,
+       date,
+       notificationBody
+     });
+
+     console.log(`🎉 Уведомления о событии отправлены для ${tokens.length} родителей`);
+
+     res.json({
+       success: true,
+       message: `Уведомления отправлены ${tokens.length} родителям`,
+       recipients: tokens.length
+     });
+
+   } catch (err) {
+     console.error("❌ Ошибка отправки уведомления о событии:", err);
+     res.status(500).json({
+       error: "Внутренняя ошибка сервера: " + err.message
+     });
+   }
+ });
+
+ // === Форматирование текста уведомления ===
+ function formatEventNotification(title, time, place, groupName) {
+   let notification = `📅 ${title}`;
+
+   if (time) {
+     notification += ` в ${time}`;
+   }
+
+   if (place) {
+     notification += ` (${place})`;
+   }
+
+   if (groupName) {
+     notification += ` • ${groupName}`;
+   }
+
+   return notification;
+ }
+
+ // === Отправка FCM уведомлений о событии ===
+ async function sendEventNotifications({
+   tokens,
+   groupId,
+   groupName,
+   eventId,
+   title,
+   time,
+   place,
+   comments,
+   date,
+   notificationBody
+ }) {
+   try {
+     console.log("📱 Отправка FCM уведомлений для токенов:", tokens.length);
+
+     for (const token of tokens) {
+       try {
+         console.log("➡️ Отправка уведомления для токена:", token.substring(0, 10) + "...");
+
+         const messagePayload = {
+           token,
+           data: {
+             type: "new_event",
+             groupId: String(groupId || ""),
+             groupName: String(groupName || ""),
+             eventId: String(eventId || ""),
+             title: String(title || ""),
+             time: String(time || ""),
+             place: String(place || ""),
+             comments: String(comments || ""),
+             date: String(date || ""),
+             timestamp: String(Date.now())
+           },
+           notification: {
+             title: "📅 Новое событие",
+             body: notificationBody,
+             // Для Android - важное уведомление
+             android: {
+               priority: "high",
+               notification: {
+                 sound: "default",
+                 channel_id: "events_channel"
+               }
+             },
+             // Для iOS
+             apns: {
+               payload: {
+                 aps: {
+                   sound: "default",
+                   badge: 1,
+                   'content-available': 1
+                 }
+               }
+             }
+           }
+         };
+
+         console.log("📨 Отправляю FCM payload:", JSON.stringify(messagePayload.data, null, 2));
+         const response = await admin.messaging().send(messagePayload);
+
+         console.log("✅ Пуш отправлен для токена:", token.substring(0, 10) + "...", "| response:", response);
+
+       } catch (tokenError) {
+         console.error("❌ Ошибка отправки для токена:", token.substring(0, 10) + "...", tokenError.message);
+
+         // Удаляем невалидные токены
+         if (tokenError.code === "messaging/registration-token-not-registered") {
+           await removeInvalidToken(token);
+         }
+       }
+     }
+
+     console.log(`🎉 Уведомления о событии отправлены для ${tokens.length} получателей`);
+
+   } catch (err) {
+     console.error("❌ Ошибка в sendEventNotifications:", err.message, err.stack);
+   }
+ }
 
 
 // === Проверка сервера ===
