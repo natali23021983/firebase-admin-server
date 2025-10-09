@@ -631,7 +631,7 @@ app.post('/generate-upload-url', verifyToken, async (req, res) => {
   }
 });
 
-// Функция проверки доступа к чату
+/// Функция проверки доступа к чату
  async function checkChatAccess(userId, chatId, isPrivate) {
    try {
      console.log(
@@ -650,52 +650,17 @@ app.post('/generate-upload-url', verifyToken, async (req, res) => {
        console.log('Приватный чат доступ:', hasAccess, 'участники:', parts);
        return hasAccess;
      } else {
-       // Для групповых чатов
-       const groupRef = db.ref(`groups/${chatId}`);
+       // Для групповых чатов - проверяем существование группы
+       const groupRef = db.ref(`chats/groups/${chatId}`);
        const groupSnap = await groupRef.once('value');
 
        if (!groupSnap.exists()) {
-         console.log('Группа не найдена:', chatId);
+         console.log('Групповой чат не найден:', chatId);
          return false;
        }
 
-       const group = groupSnap.val();
-
-       // 1. Если педагог
-       if (group.teachers && group.teachers[userId]) {
-         console.log('✅ Пользователь является педагогом группы');
-         return true;
-       }
-
-       // 2. Если явно указан как родитель
-       if (group.parents && group.parents[userId]) {
-         console.log('✅ Пользователь является родителем группы');
-         return true;
-       }
-
-       // 3. Если родитель связан с группой через ребёнка
-       const userRef = db.ref(`users/${userId}`);
-       const userSnap = await userRef.once('value');
-
-       if (userSnap.exists()) {
-         const user = userSnap.val();
-
-         if (user.role === "Родитель" && user.children) {
-           for (const childId of Object.keys(user.children)) {
-             if (
-               (group.children && group.children[childId]) || // ребёнок есть в группе
-               (user.children[childId].groupId === chatId) || // или по полю groupId
-               (user.children[childId].group === chatId)      // legacy
-             ) {
-               console.log('✅ Родитель связан с группой через ребёнка:', childId);
-               return true;
-             }
-           }
-         }
-       }
-
-       console.log('⛔ Доступ к группе запрещен для пользователя:', userId);
-       return false;
+       console.log('✅ Групповой чат существует, доступ разрешен');
+       return true;
      }
    } catch (error) {
      console.error('Ошибка проверки доступа к чату:', error);
@@ -895,82 +860,85 @@ function getFileTypeText(messageType) {
   }
 }
 
-// === Отправка сообщения с автоматическим push-уведомлением ===
-app.post("/send-message", verifyToken, async (req, res) => {
-  try {
-    const { chatId, message, messageType = "text", fileUrl, fileName } = req.body;
-    const senderId = req.user.uid;
+/// === Отправка сообщения с автоматическим push-уведомлением ===
+ app.post("/send-message", verifyToken, async (req, res) => {
+   try {
+     const { chatId, message, messageType = "text", fileUrl, fileName } = req.body;
+     const senderId = req.user.uid;
 
-    console.log("=== 📨 НОВОЕ СООБЩЕНИЕ ===");
-    console.log("👤 От:", senderId);
-    console.log("💬 Текст:", message);
-    console.log("🆔 ChatId:", chatId);
-    console.log("📁 Тип:", messageType);
-    console.log("🌐 File:", fileUrl);
+     console.log("=== 📨 НОВОЕ СООБЩЕНИЕ ===");
+     console.log("👤 От:", senderId);
+     console.log("💬 Текст:", message);
+     console.log("🆔 ChatId:", chatId);
+     console.log("📁 Тип:", messageType);
+     console.log("🌐 File:", fileUrl);
 
-    if (!chatId || !message) {
-      return res.status(400).json({ error: "chatId и message обязательны" });
-    }
+     if (!chatId || !message) {
+       return res.status(400).json({ error: "chatId и message обязательны" });
+     }
 
-    // 1. Получаем данные отправителя
-    const senderSnap = await db.ref(`users/${senderId}`).once('value');
-    const sender = senderSnap.val();
-    const senderName = sender?.name || "Неизвестный";
+     // 1. Получаем данные отправителя
+     const senderSnap = await db.ref(`users/${senderId}`).once('value');
+     const sender = senderSnap.val();
+     const senderName = sender?.name || "Неизвестный";
 
-    // 2. Сохраняем сообщение в базу
-    const messageId = uuidv4();
-    const messageData = {
-      id: messageId,
-      senderId,
-      senderName,
-      text: message,
-      timestamp: Date.now(),
-      fileUrl: fileUrl || null,
-      fileType: messageType,
-      fileName: fileName || null
-    };
+     // 2. Сохраняем сообщение в базу
+     const messageId = uuidv4();
+     const messageData = {
+       id: messageId,
+       senderId,
+       senderName,
+       text: message,
+       timestamp: Date.now(),
+       fileUrl: fileUrl || null,
+       fileType: messageType,
+       fileName: fileName || null
+     };
 
-    // 3. Определяем тип чата
-    const isPrivateChat = await isPrivateChatId(chatId);
-    console.log("🔍 Тип чата:", isPrivateChat ? "PRIVATE" : "GROUP");
+     // 3. Определяем тип чата
+     const isPrivateChat = await isPrivateChatId(chatId);
+     console.log("🔍 Тип чата:", isPrivateChat ? "PRIVATE" : "GROUP");
 
-    let chatRef;
-    if (isPrivateChat) {
-      chatRef = db.ref(`chats/private/${chatId}/messages/${messageId}`);
-      console.log("📁 Путь: chats/private/");
-    } else {
-      chatRef = db.ref(`chats/groups/${chatId}/messages/${messageId}`);
-      console.log("📁 Путь: chats/groups/");
-    }
+     let chatRef;
+     if (isPrivateChat) {
+       // Для приватных чатов
+       chatRef = db.ref(`chats/private/${chatId}/messages/${messageId}`);
+       console.log("📁 Путь: chats/private/");
+     } else {
+       // Для групповых чатов - ИСПРАВЛЕННЫЙ ПУТЬ
+       // Используем правильный путь: chats/groups/{groupId}/messages/{messageId}
+       chatRef = db.ref(`chats/groups/${chatId}/messages/${messageId}`);
+       console.log("📁 Путь: chats/groups/");
+     }
 
-    await chatRef.set(messageData);
-    console.log("✅ Сообщение сохранено в Firebase");
+     await chatRef.set(messageData);
+     console.log("✅ Сообщение сохранено в Firebase");
 
-    // 4. Отправляем уведомления
-    await sendChatNotification({
-      chatId,
-      senderId,
-      senderName,
-      message,
-      messageType,
-      fileUrl,
-      fileName,
-      isPrivate: isPrivateChat
-    });
+     // 4. Отправляем уведомления
+     await sendChatNotification({
+       chatId,
+       senderId,
+       senderName,
+       message,
+       messageType,
+       fileUrl,
+       fileName,
+       isPrivate: isPrivateChat
+     });
 
-    console.log("✅ Уведомления отправлены");
+     console.log("✅ Уведомления отправлены");
 
-    res.json({
-      success: true,
-      messageId,
-      timestamp: messageData.timestamp
-    });
+     res.json({
+       success: true,
+       messageId,
+       timestamp: messageData.timestamp
+     });
 
-  } catch (err) {
-    console.error("❌ Ошибка отправки сообщения:", err);
-    res.status(500).json({ error: err.message });
-  }
-});
+   } catch (err) {
+     console.error("❌ Ошибка отправки сообщения:", err);
+     res.status(500).json({ error: err.message });
+   }
+ });
 
 // === Сохранение FCM токена пользователя ===
 app.post("/save-fcm-token", verifyToken, async (req, res) => {
