@@ -854,290 +854,348 @@ app.post("/send-message", verifyToken, async (req, res) => {
   }
 });
 
-/// === Удаление невалидного FCM токена ===
- async function removeInvalidToken(invalidToken) {
-   try {
-     console.log("🗑️ Удаление невалидного FCM токена:", invalidToken.substring(0, 10) + "...");
+// === Удаление невалидного FCM токена ===
+async function removeInvalidToken(invalidToken) {
+  try {
+    console.log("🗑️ Удаление невалидного FCM токена:", invalidToken.substring(0, 10) + "...");
 
-     // Ищем пользователя с этим токеном
-     const usersSnap = await db.ref('users').once('value');
-     const users = usersSnap.val() || {};
+    // Ищем пользователя с этим токеном
+    const usersSnap = await db.ref('users').once('value');
+    const users = usersSnap.val() || {};
 
-     for (const [userId, user] of Object.entries(users)) {
-       if (user.fcmToken === invalidToken) {
-         await db.ref(`users/${userId}`).update({ fcmToken: null });
-         console.log("✅ Токен удален у пользователя:", userId);
-         break;
-       }
-     }
-   } catch (err) {
-     console.error("❌ Ошибка удаления токена:", err);
-   }
- }
+    for (const [userId, user] of Object.entries(users)) {
+      if (user.fcmToken === invalidToken) {
+        await db.ref(`users/${userId}`).update({ fcmToken: null });
+        console.log("✅ Токен удален у пользователя:", userId);
+        break;
+      }
+    }
+  } catch (err) {
+    console.error("❌ Ошибка удаления токена:", err);
+  }
+}
 
- // === Получение названия группы ===
- async function getGroupName(groupId) {
-   try {
-     const groupSnap = await db.ref(`groups/${groupId}/name`).once('value');
-     return groupSnap.val() || `Группа ${groupId}`;
-   } catch (error) {
-     console.error("❌ Ошибка получения названия группы:", error);
-     return `Группа ${groupId}`;
-   }
- }
+// === Получение названия группы ===
+async function getGroupName(groupId) {
+  try {
+    const groupSnap = await db.ref(`groups/${groupId}/name`).once('value');
+    return groupSnap.val() || `Группа ${groupId}`;
+  } catch (error) {
+    console.error("❌ Ошибка получения названия группы:", error);
+    return `Группа ${groupId}`;
+  }
+}
 
- // === Поиск родителей по ID группы ===
- async function findParentsByGroupId(groupId) {
-   try {
-     console.log("🔍 Поиск родителей для группы:", groupId);
+// === Поиск родителей по ID группы ===
+async function findParentsByGroupId(groupId) {
+  try {
+    console.log("🔍 Поиск родителей для группы:", groupId);
 
-     // 1. Получаем детей из группы
-     const groupSnap = await db.ref(`groups/${groupId}/children`).once('value');
-     const childrenInGroup = groupSnap.val() || {};
-     const childIds = Object.keys(childrenInGroup);
+    // 1. Получаем детей из группы
+    const groupSnap = await db.ref(`groups/${groupId}/children`).once('value');
+    const childrenInGroup = groupSnap.val() || {};
+    const childNames = Object.values(childrenInGroup); // Получаем массив имен детей
 
-     console.log("👶 Дети в группе:", childIds);
+    console.log("👶 Дети в группе:", childNames);
 
-     if (childIds.length === 0) {
-       console.log("⚠️ В группе нет детей");
-       return [];
-     }
+    if (childNames.length === 0) {
+      console.log("⚠️ В группе нет детей");
+      return [];
+    }
 
-     // 2. Ищем родителей этих детей
-     const usersSnap = await db.ref('users').once('value');
-     const users = usersSnap.val() || {};
-     const parents = [];
-     const foundParentIds = new Set();
+    // 2. Ищем родителей этих детей
+    const usersSnap = await db.ref('users').once('value');
+    const users = usersSnap.val() || {};
+    const parents = [];
+    const foundParentIds = new Set();
 
-     for (const [userId, user] of Object.entries(users)) {
-       // Проверяем только пользователей с ролью "Родитель"
-       if (user.role === "Родитель" && user.children) {
+    console.log(`🔍 Всего пользователей в базе: ${Object.keys(users).length}`);
 
-         // Проверяем, есть ли у этого родителя хотя бы один ребенок из группы
-         for (const childId of childIds) {
-           // ВАЖНО: childId из группы может отличаться от childId у родителя
-           // Ищем по всем детям родителя
-           for (const [parentChildId, parentChildData] of Object.entries(user.children)) {
-             // Сравниваем полные имена детей (более надежно чем ID)
-             if (parentChildData && childrenInGroup[childId] &&
-                 parentChildData.fullName === childrenInGroup[childId]) {
+    for (const [userId, user] of Object.entries(users)) {
+      // Проверяем только пользователей с ролью "Родитель"
+      if (user.role === "Родитель" && user.children) {
 
-               if (!foundParentIds.has(userId)) {
-                 parents.push({
-                   userId,
-                   name: user.name || "Родитель",
-                   fcmToken: user.fcmToken || null,
-                   childName: parentChildData.fullName
-                 });
-                 foundParentIds.add(userId);
-                 console.log("✅ Найден родитель:", user.name, "для ребенка:", parentChildData.fullName);
-                 break; // Переходим к следующему родителю
-               }
-             }
-           }
-         }
-       }
-     }
+        console.log(`🔍 Проверяем родителя: ${user.name}`);
+        console.log(`   Его дети:`, Object.values(user.children).map(c => c.fullName));
 
-     console.log(`👨‍👩‍👧‍👦 Всего найдено родителей: ${parents.length}`);
-     return parents;
+        // Проверяем ВСЕХ детей этого родителя
+        for (const [parentChildId, parentChildData] of Object.entries(user.children)) {
+          // Проверяем, есть ли имя этого ребенка в списке детей группы
+          if (parentChildData && parentChildData.fullName &&
+              childNames.includes(parentChildData.fullName)) {
 
-   } catch (error) {
-     console.error("❌ Ошибка поиска родителей по группе:", error);
-     return [];
-   }
- }
+            if (!foundParentIds.has(userId)) {
+              parents.push({
+                userId,
+                name: user.name || "Родитель",
+                fcmToken: user.fcmToken || null,
+                childName: parentChildData.fullName
+              });
+              foundParentIds.add(userId);
+              console.log(`   ✅ СОВПАДЕНИЕ: ${user.name} -> ${parentChildData.fullName}`);
+              break; // Переходим к следующему родителю, нашли хотя бы одного ребенка
+            }
+          }
+        }
+      }
+    }
 
- // === Отправка уведомления о новом событии ===
- app.post("/send-event-notification", verifyToken, async (req, res) => {
-   try {
-     const {
-       groupId,
-       groupName,
-       eventId,
-       title,
-       time,
-       place,
-       comments,
-       date
-     } = req.body;
+    console.log(`👨‍👩‍👧‍👦 Всего найдено родителей: ${parents.length}`);
+    console.log(`📋 Найденные родители:`, parents.map(p => `${p.name} (${p.childName})`));
 
-     // Валидация обязательных полей
-     if (!groupId || !eventId || !title) {
-       return res.status(400).json({
-         error: "groupId, eventId, title обязательны"
-       });
-     }
+    return parents;
 
-     console.log("🔔 Запрос на отправку уведомления о событии:");
-     console.log("   - Группа:", groupId, groupName);
-     console.log("   - Событие:", title, time);
+  } catch (error) {
+    console.error("❌ Ошибка поиска родителей по группе:", error);
+    return [];
+  }
+}
 
-     // Получаем настоящее название группы
-     const actualGroupName = await getGroupName(groupId);
-     console.log("   - Название группы:", actualGroupName);
+// === Отправка уведомления о новом событии ===
+app.post("/send-event-notification", verifyToken, async (req, res) => {
+  try {
+    const {
+      groupId,
+      groupName,
+      eventId,
+      title,
+      time,
+      place,
+      comments,
+      date
+    } = req.body;
 
-     // 1. Находим родителей группы
-     const parents = await findParentsByGroupId(groupId);
+    // Валидация обязательных полей
+    if (!groupId || !eventId || !title) {
+      return res.status(400).json({
+        error: "groupId, eventId, title обязательны"
+      });
+    }
 
-     if (parents.length === 0) {
-       console.log("⚠️ Не найдены родители для группы:", groupId);
-       return res.json({
-         success: true,
-         message: "Событие создано, но родители не найдены"
-       });
-     }
+    console.log("🔔 Запрос на отправку уведомления о событии:");
+    console.log("   - Группа:", groupId, groupName);
+    console.log("   - Событие:", title, time);
+    console.log("   - Дата:", date);
 
-     console.log("👨‍👩‍👧‍👦 Найдены родители:", parents.length);
+    // Получаем настоящее название группы
+    const actualGroupName = await getGroupName(groupId);
+    console.log("   - Название группы:", actualGroupName);
 
-     // 2. Получаем FCM токены родителей
-     const tokens = [];
-     for (const parent of parents) {
-       if (parent.fcmToken) {
-         tokens.push(parent.fcmToken);
-         console.log("✅ Токен родителя:", parent.userId, parent.name, "- ребенок:", parent.childName);
-       }
-     }
+    // 1. Находим родителей группы
+    const parents = await findParentsByGroupId(groupId);
 
-     if (tokens.length === 0) {
-       console.log("⚠️ Нет активных FCM токенов у родителей");
-       return res.json({
-         success: true,
-         message: "Событие создано, но нет активных токенов"
-       });
-     }
+    if (parents.length === 0) {
+      console.log("⚠️ Не найдены родители для группы:", groupId);
+      return res.json({
+        success: true,
+        message: "Событие создано, но родители не найдены"
+      });
+    }
 
-     // 3. Формируем текст уведомления
-     const notificationBody = formatEventNotification(title, time, place, actualGroupName);
+    console.log("👨‍👩‍👧‍👦 Найдены родители:", parents.length);
+    console.log("📋 Список родителей:");
+    parents.forEach((parent, index) => {
+      console.log(`   ${index + 1}. ${parent.name} (ребенок: ${parent.childName})`);
+    });
 
-     // 4. Отправляем уведомления
-     await sendEventNotifications({
-       tokens,
-       groupId,
-       groupName: actualGroupName,
-       eventId,
-       title,
-       time,
-       place,
-       comments,
-       date,
-       notificationBody
-     });
+    // 2. Получаем FCM токены родителей
+    const tokens = [];
+    const parentsWithTokens = [];
 
-     console.log(`🎉 Уведомления о событии отправлены для ${tokens.length} родителей`);
+    for (const parent of parents) {
+      if (parent.fcmToken) {
+        tokens.push(parent.fcmToken);
+        parentsWithTokens.push(parent);
+        console.log("✅ Токен родителя:", parent.userId, parent.name, "- ребенок:", parent.childName);
+      } else {
+        console.log("❌ Нет токена у родителя:", parent.name);
+      }
+    }
 
-     res.json({
-       success: true,
-       message: `Уведомления отправлены ${tokens.length} родителям`,
-       recipients: tokens.length,
-       parentDetails: parents.map(p => ({ name: p.name, child: p.childName }))
-     });
+    if (tokens.length === 0) {
+      console.log("⚠️ Нет активных FCM токенов у родителей");
+      return res.json({
+        success: true,
+        message: "Событие создано, но нет активных токенов"
+      });
+    }
 
-   } catch (err) {
-     console.error("❌ Ошибка отправки уведомления о событии:", err);
-     res.status(500).json({
-       error: "Внутренняя ошибка сервера: " + err.message
-     });
-   }
- });
+    console.log(`📱 Найдены активные токены: ${tokens.length} из ${parents.length} родителей`);
 
- // === Форматирование текста уведомления ===
- function formatEventNotification(title, time, place, groupName) {
-   let notification = `📅 ${title}`;
+    // 3. Формируем текст уведомления
+    const notificationBody = formatEventNotification(title, time, place, actualGroupName);
+    console.log("📝 Текст уведомления:", notificationBody);
 
-   if (time) {
-     notification += ` в ${time}`;
-   }
+    // 4. Отправляем уведомления
+    await sendEventNotifications({
+      tokens,
+      groupId,
+      groupName: actualGroupName,
+      eventId,
+      title,
+      time,
+      place,
+      comments,
+      date,
+      notificationBody
+    });
 
-   if (place) {
-     notification += ` (${place})`;
-   }
+    console.log(`🎉 Уведомления о событии отправлены для ${tokens.length} родителей`);
 
-   if (groupName) {
-     notification += ` • ${groupName}`;
-   }
+    res.json({
+      success: true,
+      message: `Уведомления отправлены ${tokens.length} родителям`,
+      recipients: tokens.length,
+      totalParents: parents.length,
+      parentsWithTokens: tokens.length,
+      parentDetails: parentsWithTokens.map(p => ({
+        name: p.name,
+        child: p.childName
+      }))
+    });
 
-   return notification;
- }
+  } catch (err) {
+    console.error("❌ Ошибка отправки уведомления о событии:", err);
+    res.status(500).json({
+      error: "Внутренняя ошибка сервера: " + err.message
+    });
+  }
+});
 
- // === Отправка FCM уведомлений о событии ===
- async function sendEventNotifications({
-   tokens,
-   groupId,
-   groupName,
-   eventId,
-   title,
-   time,
-   place,
-   comments,
-   date,
-   notificationBody
- }) {
-   try {
-     console.log("📱 Отправка FCM уведомлений для токенов:", tokens.length);
+// === Форматирование текста уведомления ===
+function formatEventNotification(title, time, place, groupName) {
+  let notification = `📅 ${title}`;
 
-     for (const token of tokens) {
-       try {
-         console.log("➡️ Отправка уведомления для токена:", token.substring(0, 10) + "...");
+  if (time) {
+    notification += ` в ${time}`;
+  }
 
-         const messagePayload = {
-           token,
-           data: {
-             type: "new_event",
-             groupId: String(groupId || ""),
-             groupName: String(groupName || ""),
-             eventId: String(eventId || ""),
-             title: String(title || ""),
-             time: String(time || ""),
-             place: String(place || ""),
-             comments: String(comments || ""),
-             date: String(date || ""),
-             timestamp: String(Date.now())
-           },
-           notification: {
-             title: "📅 Новое событие",
-             body: notificationBody,
-             android: {
-               priority: "high",
-               notification: {
-                 sound: "default",
-                 channel_id: "events_channel"
-               }
-             },
-             apns: {
-               payload: {
-                 aps: {
-                   sound: "default",
-                   badge: 1,
-                   'content-available': 1
-                 }
-               }
-             }
-           }
-         };
+  if (place) {
+    notification += ` (${place})`;
+  }
 
-         console.log("📨 Отправляю FCM payload:", JSON.stringify(messagePayload.data, null, 2));
-         const response = await admin.messaging().send(messagePayload);
+  if (groupName) {
+    notification += ` • ${groupName}`;
+  }
 
-         console.log("✅ Пуш отправлен для токена:", token.substring(0, 10) + "...", "| response:", response);
+  return notification;
+}
 
-       } catch (tokenError) {
-         console.error("❌ Ошибка отправки для токена:", token.substring(0, 10) + "...", tokenError.message);
+// === Отправка FCM уведомлений о событии ===
+async function sendEventNotifications({
+  tokens,
+  groupId,
+  groupName,
+  eventId,
+  title,
+  time,
+  place,
+  comments,
+  date,
+  notificationBody
+}) {
+  try {
+    console.log("📱 Отправка FCM уведомлений для токенов:", tokens.length);
 
-         // Удаляем невалидные токены
-         if (tokenError.code === "messaging/registration-token-not-registered") {
-           await removeInvalidToken(token);
-         }
-       }
-     }
+    let successful = 0;
+    let failed = 0;
 
-     console.log(`🎉 Уведомления о событии отправлены для ${tokens.length} получателей`);
+    for (const token of tokens) {
+      try {
+        console.log("➡️ Отправка уведомления для токена:", token.substring(0, 15) + "...");
 
-   } catch (err) {
-     console.error("❌ Ошибка в sendEventNotifications:", err.message, err.stack);
-   }
- }
+        const messagePayload = {
+          token,
+          data: {
+            type: "new_event",
+            groupId: String(groupId || ""),
+            groupName: String(groupName || ""),
+            eventId: String(eventId || ""),
+            title: String(title || ""),
+            time: String(time || ""),
+            place: String(place || ""),
+            comments: String(comments || ""),
+            date: String(date || ""),
+            timestamp: String(Date.now())
+          },
+          notification: {
+            title: "📅 Новое событие",
+            body: notificationBody,
+            // Для Android - важное уведомление
+            android: {
+              priority: "high",
+              notification: {
+                sound: "default",
+                channel_id: "events_channel"
+              }
+            },
+            // Для iOS
+            apns: {
+              payload: {
+                aps: {
+                  sound: "default",
+                  badge: 1,
+                  'content-available': 1
+                }
+              }
+            }
+          }
+        };
 
+        console.log("📨 Отправляю FCM payload:", JSON.stringify(messagePayload.data, null, 2));
+        const response = await admin.messaging().send(messagePayload);
+
+        successful++;
+        console.log("✅ Пуш отправлен для токена:", token.substring(0, 15) + "...", "| response:", response);
+
+      } catch (tokenError) {
+        failed++;
+        console.error("❌ Ошибка отправки для токена:", token.substring(0, 15) + "...", tokenError.message);
+
+        // Удаляем невалидные токены
+        if (tokenError.code === "messaging/registration-token-not-registered") {
+          await removeInvalidToken(token);
+        }
+      }
+    }
+
+    console.log(`🎉 Уведомления о событии отправлены для ${tokens.length} получателей`);
+    console.log(`📊 Статистика: Успешно: ${successful}, Неудачно: ${failed}`);
+
+  } catch (err) {
+    console.error("❌ Ошибка в sendEventNotifications:", err.message, err.stack);
+  }
+}
+
+// === Health Check для мониторинга ===
+app.get("/health", (req, res) => {
+  console.log("✅ Health check выполнен");
+  res.json({
+    status: "OK",
+    timestamp: new Date().toISOString(),
+    service: "Firebase Admin Server",
+    version: "1.0.0"
+  });
+});
+
+// === Информация о сервере ===
+app.get("/info", (req, res) => {
+  console.log("ℹ️ Запрос информации о сервере");
+  res.json({
+    service: "Firebase Admin Notification Server",
+    endpoints: {
+      "POST /send-event-notification": "Отправка уведомлений о новых событиях",
+      "GET /health": "Проверка работоспособности сервера",
+      "GET /info": "Информация о сервере"
+    },
+    features: [
+      "Отправка FCM уведомлений о событиях ВСЕМ родителям группы",
+      "Автоматическое удаление невалидных токенов",
+      "Поиск родителей по группе",
+      "Расширенное логирование"
+    ]
+  });
+});
 
 // === Проверка сервера ===
 app.get("/", (req, res) => res.send("Server is running"));
