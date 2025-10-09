@@ -1022,10 +1022,7 @@ function formatEventNotification(title, time, place, groupName) {
 
      console.log("👶 Дети в группе:", childIds.length, childIds);
 
-     if (childIds.length === 0) {
-       console.log("⚠️ В группе нет детей");
-       return [];
-     }
+     if (childIds.length === 0) return [];
 
      // 2. Ищем родителей этих детей
      const usersSnap = await db.ref('users').once('value');
@@ -1033,16 +1030,13 @@ function formatEventNotification(title, time, place, groupName) {
      const parents = [];
      const foundParentIds = new Set();
 
-     console.log("🔍 Всего пользователей в базе:", Object.keys(users).length);
-
      for (const [userId, user] of Object.entries(users)) {
-       // Проверяем только пользователей с ролью "Родитель"
        if (user.role === "Родитель" && user.children) {
 
-         console.log(`🔍 Проверяем родителя: ${user.name}`);
-         console.log(`   Его дети:`, Object.values(user.children).map(c => c.fullName));
+         // ✅ ПОЛУЧАЕМ ДАННЫЕ ПОЛЬЗОВАТЕЛЯ
+         const userDataSnap = await db.ref(`users/${userId}`).once('value');
+         const userData = userDataSnap.val() || {};
 
-         // Проверяем, есть ли у этого родителя хотя бы один ребенок из группы
          for (const childId of childIds) {
            const childNameInGroup = childrenInGroup[childId];
 
@@ -1050,15 +1044,19 @@ function formatEventNotification(title, time, place, groupName) {
              if (parentChildData && parentChildData.fullName === childNameInGroup) {
 
                if (!foundParentIds.has(userId)) {
+                 // ✅ СОБИРАЕМ ВСЕ ДАННЫЕ РОДИТЕЛЯ
                  parents.push({
-                   userId,
+                   userId: userId,
                    name: user.name || "Родитель",
                    fcmToken: user.fcmToken || null,
-                   childName: parentChildData.fullName
+                   childId: parentChildId, // ✅ ID ребенка
+                   childName: parentChildData.fullName,
+                   childBirthDate: parentChildData.birthDate || "", // ✅ дата рождения
+                   childGroup: groupId
                  });
                  foundParentIds.add(userId);
                  console.log(`   ✅ СОВПАДЕНИЕ: ${user.name} -> ${parentChildData.fullName}`);
-                 break; // Переходим к следующему родителю
+                 break;
                }
              }
            }
@@ -1066,109 +1064,104 @@ function formatEventNotification(title, time, place, groupName) {
        }
      }
 
-     console.log(`👨‍👩‍👧‍👦 Всего найдено родителей: ${parents.length}`);
-     console.log("📋 Найденные родители:", parents.map(p => `${p.name} (${p.childName})`));
-
+     console.log(`👨‍👩‍👧‍👦 Найдено родителей: ${parents.length}`);
      return parents;
 
    } catch (error) {
-     console.error("❌ Ошибка поиска родителей по группе:", error);
+     console.error("❌ Ошибка поиска родителей:", error);
      return [];
    }
  }
 
- // === Отправка FCM уведомлений о событии ===
- async function sendEventNotifications({
-   tokens,
-   groupId,
-   groupName,
-   eventId,
-   title,
-   time,
-   place,
-   comments,
-   date,
-   notificationBody
- }) {
-   try {
+ /// === Отправка FCM уведомлений о событии ===
+  async function sendEventNotifications({
+    parents, // ✅ ПЕРЕДАЕМ ВСЕХ РОДИТЕЛЕЙ С ИХ ДАННЫМИ
+    groupId,
+    groupName,
+    eventId,
+    title,
+    time,
+    place,
+    comments,
+    date,
+    notificationBody
+  }) {
+    try {
+      const parentsWithTokens = parents.filter(parent => parent.fcmToken && parent.fcmToken.trim() !== "");
+      console.log(`📱 Отправка FCM уведомлений для ${parentsWithTokens.length} родителей с токенами`);
 
-     const uniqueTokens = [...new Set(tokens)];
-     console.log(`📱 Отправка FCM уведомлений для токенов: ${uniqueTokens.length} (уникальные) из ${tokens.length} (всего)`);
+      let successful = 0;
+      let failed = 0;
+      const errors = [];
 
-     let successful = 0;
-     let failed = 0;
-     const errors = [];
+      for (const parent of parentsWithTokens) {
+        try {
+          console.log(`➡️ Отправка уведомления для ${parent.name}, токен:`, parent.fcmToken.substring(0, 15) + "...");
 
-     for (const token of uniqueTokens) {
-       try {
-         console.log("➡️ Отправка уведомления для токена:", token.substring(0, 15) + "...");
+          // ✅ ДИНАМИЧЕСКИЕ ДАННЫЕ КАЖДОГО РОДИТЕЛЯ
+          const messagePayload = {
+            token: parent.fcmToken,
+            notification: {
+              title: "📅 Новое событие",
+              body: notificationBody
+            },
+            data: {
+              // ✅ ОСНОВНЫЕ ДАННЫЕ ДЛЯ ОТКРЫТИЯ
+              type: "new_event",
+              autoOpenFragment: "events",
+              groupId: String(groupId || ""),
+              groupName: String(groupName || ""),
+              eventId: String(eventId || ""),
+              title: String(title || ""),
+              time: String(time || ""),
+              place: String(place || ""),
+              comments: String(comments || ""),
+              date: String(date || ""),
+              timestamp: String(Date.now()),
 
-         // УПРОЩЕННЫЙ payload без android/apns настроек
-         const messagePayload = {
-           token: token,
-           notification: {
-             title: "📅 Новое событие",
-             body: notificationBody
-           },
-           data: {
-             type: "new_event",
-             groupId: String(groupId || ""),
-             groupName: String(groupName || ""),
-             eventId: String(eventId || ""),
-             title: String(title || ""),
-             time: String(time || ""),
-             place: String(place || ""),
-             comments: String(comments || ""),
-             date: String(date || ""),
-             timestamp: String(Date.now())
-           }
-         };
+              // ✅ ДИНАМИЧЕСКИЕ ДАННЫЕ РОДИТЕЛЯ
+              childId: parent.childId || "", // ✅ ДОБАВЬТЕ childId В findParentsByGroupId
+              userId: parent.userId || "",
+              childFullName: parent.childName || "",
+              childGroup: String(groupName || ""),
+              childBirthDate: parent.childBirthDate || "" // ✅ ДОБАВЬТЕ В findParentsByGroupId
+            }
+          };
 
-         console.log("📨 Отправляю FCM payload:", JSON.stringify(messagePayload.data, null, 2));
-         const response = await admin.messaging().send(messagePayload);
+          console.log("📨 Отправляю FCM payload для", parent.name);
+          console.log("   Данные:", JSON.stringify(messagePayload.data, null, 2));
 
-         successful++;
-         console.log("✅ Пуш отправлен для токена:", token.substring(0, 15) + "...", "| response:", response);
+          const response = await admin.messaging().send(messagePayload);
 
-       } catch (tokenError) {
-         failed++;
-         console.error("❌ Ошибка отправки для токена:", token.substring(0, 15) + "...", tokenError.message);
-         console.error("🔴 Детали ошибки:", tokenError);
+          successful++;
+          console.log("✅ Пуш отправлен для", parent.name, "| response:", response);
 
-         errors.push({
-           token: token.substring(0, 15) + "...",
-           error: tokenError.message,
-           code: tokenError.code
-         });
+        } catch (tokenError) {
+          failed++;
+          console.error("❌ Ошибка отправки для", parent.name, tokenError.message);
 
-         // Удаляем невалидные токены
-         if (tokenError.code === "messaging/registration-token-not-registered") {
-           const removeResult = await removeInvalidToken(token);
-           console.log(`🗑️ Результат удаления токена:`, removeResult);
-         }
-       }
-     }
+          errors.push({
+            parent: parent.name,
+            error: tokenError.message,
+            code: tokenError.code
+          });
 
-     console.log(`🎉 Уведомления о событии отправлены для ${uniqueTokens.length} получателей`);
-     console.log(`📊 Статистика: Успешно: ${successful}, Неудачно: ${failed}`);
+          // Удаляем невалидные токены
+          if (tokenError.code === "messaging/registration-token-not-registered") {
+            const removeResult = await removeInvalidToken(parent.fcmToken);
+            console.log(`🗑️ Результат удаления токена:`, removeResult);
+          }
+        }
+      }
 
-     return {
-       successful,
-       failed,
-       totalTokens: uniqueTokens.length,
-       errors
-     };
+      console.log(`🎉 Уведомления отправлены: Успешно ${successful}, Неудачно ${failed}`);
+      return { successful, failed, totalTokens: parentsWithTokens.length, errors };
 
-   } catch (err) {
-     console.error("❌ Ошибка в sendEventNotifications:", err.message, err.stack);
-     return {
-       successful: 0,
-       failed: tokens.length,
-       totalTokens: tokens.length,
-       errors: [err.message]
-     };
-   }
- }
+    } catch (err) {
+      console.error("❌ Ошибка в sendEventNotifications:", err);
+      return { successful: 0, failed: parents.length, errors: [err.message] };
+    }
+  }
 
  // === Отправка уведомления о новом событии ===
  app.post("/send-event-notification", verifyToken, async (req, res) => {
@@ -1249,39 +1242,39 @@ function formatEventNotification(title, time, place, groupName) {
 
      console.log(`📱 Найдены активные токены: ${tokens.length} из ${parents.length} родителей`);
 
-     // 3. Формируем текст уведомления
-     const notificationBody = formatEventNotification(title, time, place, actualGroupName);
-     console.log("📝 Текст уведомления:", notificationBody);
+     /// 3. Формируем текст уведомления
+      const notificationBody = formatEventNotification(title, time, place, actualGroupName);
+      console.log("📝 Текст уведомления:", notificationBody);
 
-     // 4. Отправляем уведомления
-     const sendResults = await sendEventNotifications({
-       tokens,
-       groupId,
-       groupName: actualGroupName,
-       eventId,
-       title,
-       time,
-       place,
-       comments,
-       date,
-       notificationBody
-     });
+      // 4. Отправляем уведомления
+      const sendResults = await sendEventNotifications({
+        parents: parents, // ✅ ПЕРЕДАЕМ ВСЕХ РОДИТЕЛЕЙ
+        groupId,
+        groupName: actualGroupName,
+        eventId,
+        title,
+        time,
+        place,
+        comments,
+        date,
+        notificationBody
+      });
 
-     console.log(`🎉 Уведомления о событии отправлены для ${tokens.length} родителей`);
+      console.log(`🎉 Уведомления о событии отправлены для ${sendResults.successful} родителей`);
 
-     res.json({
-       success: true,
-       message: `Уведомления отправлены ${sendResults.successful} родителям`,
-       recipients: sendResults.successful,
-       totalParents: parents.length,
-       parentsWithTokens: tokens.length,
-       statistics: sendResults,
-       parentDetails: parentsWithTokens.map(p => ({
-         name: p.name,
-         child: p.childName,
-         hasToken: !!p.fcmToken
-       }))
-     });
+      res.json({
+        success: true,
+        message: `Уведомления отправлены ${sendResults.successful} родителям`,
+        recipients: sendResults.successful,
+        totalParents: parents.length,
+        parentsWithTokens: sendResults.successful,
+        statistics: sendResults,
+        parentDetails: parents.map(p => ({
+          name: p.name,
+          child: p.childName,
+          hasToken: !!(p.fcmToken && p.fcmToken.trim() !== "")
+        }))
+      });
 
    } catch (err) {
      console.error("❌ Ошибка отправки уведомления о событии:", err);
