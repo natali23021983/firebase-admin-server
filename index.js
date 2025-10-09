@@ -755,6 +755,7 @@ app.post('/generate-upload-url', verifyToken, async (req, res) => {
 
 
 // === Функция отправки уведомлений о новых сообщениях ===
+
 async function sendChatNotification({
   chatId,
   senderId,
@@ -894,27 +895,82 @@ function getFileTypeText(messageType) {
   }
 }
 
-
-
-// === Удаление невалидного FCM токена ===
-async function removeInvalidToken(invalidToken) {
+// === Отправка сообщения с автоматическим push-уведомлением ===
+app.post("/send-message", verifyToken, async (req, res) => {
   try {
-    console.log("🗑️ Удаление невалидного FCM токена:", invalidToken.substring(0, 10) + "...");
+    const { chatId, message, messageType = "text", fileUrl, fileName } = req.body;
+    const senderId = req.user.uid;
 
-    const usersSnap = await db.ref('users').once('value');
-    const users = usersSnap.val() || {};
+    console.log("=== 📨 НОВОЕ СООБЩЕНИЕ ===");
+    console.log("👤 От:", senderId);
+    console.log("💬 Текст:", message);
+    console.log("🆔 ChatId:", chatId);
+    console.log("📁 Тип:", messageType);
+    console.log("🌐 File:", fileUrl);
 
-    for (const [userId, user] of Object.entries(users)) {
-      if (user.fcmToken === invalidToken) {
-        await db.ref(`users/${userId}`).update({ fcmToken: null });
-        console.log("✅ Токен удален у пользователя:", userId);
-        return;
-      }
+    if (!chatId || !message) {
+      return res.status(400).json({ error: "chatId и message обязательны" });
     }
+
+    // 1. Получаем данные отправителя
+    const senderSnap = await db.ref(`users/${senderId}`).once('value');
+    const sender = senderSnap.val();
+    const senderName = sender?.name || "Неизвестный";
+
+    // 2. Сохраняем сообщение в базу
+    const messageId = uuidv4();
+    const messageData = {
+      id: messageId,
+      senderId,
+      senderName,
+      text: message,
+      timestamp: Date.now(),
+      fileUrl: fileUrl || null,
+      fileType: messageType,
+      fileName: fileName || null
+    };
+
+    // 3. Определяем тип чата
+    const isPrivateChat = await isPrivateChatId(chatId);
+    console.log("🔍 Тип чата:", isPrivateChat ? "PRIVATE" : "GROUP");
+
+    let chatRef;
+    if (isPrivateChat) {
+      chatRef = db.ref(`chats/private/${chatId}/messages/${messageId}`);
+      console.log("📁 Путь: chats/private/");
+    } else {
+      chatRef = db.ref(`chats/groups/${chatId}/messages/${messageId}`);
+      console.log("📁 Путь: chats/groups/");
+    }
+
+    await chatRef.set(messageData);
+    console.log("✅ Сообщение сохранено в Firebase");
+
+    // 4. Отправляем уведомления
+    await sendChatNotification({
+      chatId,
+      senderId,
+      senderName,
+      message,
+      messageType,
+      fileUrl,
+      fileName,
+      isPrivate: isPrivateChat
+    });
+
+    console.log("✅ Уведомления отправлены");
+
+    res.json({
+      success: true,
+      messageId,
+      timestamp: messageData.timestamp
+    });
+
   } catch (err) {
-    console.error("❌ Ошибка удаления токена:", err);
+    console.error("❌ Ошибка отправки сообщения:", err);
+    res.status(500).json({ error: err.message });
   }
-}
+});
 
 // === Сохранение FCM токена пользователя ===
 app.post("/save-fcm-token", verifyToken, async (req, res) => {
@@ -942,82 +998,6 @@ app.post("/save-fcm-token", verifyToken, async (req, res) => {
   }
 });
 
-
-/app.post("/send-message", verifyToken, async (req, res) => {
-   try {
-     const { chatId, message, messageType = "text", fileUrl, fileName } = req.body;
-     const senderId = req.user.uid;
-
-     console.log("=== 📨 НОВОЕ СООБЩЕНИЕ ===");
-     console.log("👤 От:", senderId);
-     console.log("💬 Текст:", message);
-     console.log("🆔 ChatId:", chatId);
-     console.log("📁 Тип:", messageType);
-     console.log("🌐 File:", fileUrl);
-
-     if (!chatId || !message) {
-       return res.status(400).json({ error: "chatId и message обязательны" });
-     }
-
-     // 1. Получаем данные отправителя
-     const senderSnap = await db.ref(`users/${senderId}`).once('value');
-     const sender = senderSnap.val();
-     const senderName = sender?.name || "Неизвестный";
-
-     // 2. Сохраняем сообщение в базу
-     const messageId = uuidv4();
-     const messageData = {
-       id: messageId,
-       senderId,
-       senderName,
-       text: message,
-       timestamp: Date.now(),
-       fileUrl: fileUrl || null,
-       fileType: messageType,
-       fileName: fileName || null
-     };
-
-     // 3. Определяем тип чата
-     const isPrivateChat = await isPrivateChatId(chatId);
-     console.log("🔍 Тип чата:", isPrivateChat ? "PRIVATE" : "GROUP");
-
-     let chatRef;
-     if (isPrivateChat) {
-       chatRef = db.ref(`chats/private/${chatId}/messages/${messageId}`);
-       console.log("📁 Путь: chats/private/");
-     } else {
-       chatRef = db.ref(`chats/groups/${chatId}/messages/${messageId}`);
-       console.log("📁 Путь: chats/groups/");
-     }
-
-     await chatRef.set(messageData);
-     console.log("✅ Сообщение сохранено в Firebase");
-
-     // 4. Отправляем уведомления
-     await sendChatNotification({
-       chatId,
-       senderId,
-       senderName,
-       message,
-       messageType,
-       fileUrl,
-       fileName,
-       isPrivate: isPrivateChat
-     });
-
-     console.log("✅ Уведомления отправлены");
-
-     res.json({
-       success: true,
-       messageId,
-       timestamp: messageData.timestamp
-     });
-
-   } catch (err) {
-     console.error("❌ Ошибка отправки сообщения:", err);
-     res.status(500).json({ error: err.message });
-   }
- });
 
 // === Удаление невалидного FCM токена ===
 async function removeInvalidToken(invalidToken) {
