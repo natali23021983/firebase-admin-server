@@ -907,7 +907,7 @@ app.post("/send-message", verifyToken, async (req, res) => {
      const usersSnap = await db.ref('users').once('value');
      const users = usersSnap.val() || {};
      const parents = [];
-     const foundParentIds = new Set(); // Чтобы избежать дубликатов
+     const foundParentIds = new Set();
 
      for (const [userId, user] of Object.entries(users)) {
        // Проверяем только пользователей с ролью "Родитель"
@@ -915,15 +915,25 @@ app.post("/send-message", verifyToken, async (req, res) => {
 
          // Проверяем, есть ли у этого родителя хотя бы один ребенок из группы
          for (const childId of childIds) {
-           if (user.children[childId] && !foundParentIds.has(userId)) {
-             parents.push({
-               userId,
-               name: user.name || "Родитель",
-               fcmToken: user.fcmToken || null
-             });
-             foundParentIds.add(userId);
-             console.log("✅ Найден родитель:", user.name, "для ребенка:", childId);
-             break; // Переходим к следующему родителю
+           // ВАЖНО: childId из группы может отличаться от childId у родителя
+           // Ищем по всем детям родителя
+           for (const [parentChildId, parentChildData] of Object.entries(user.children)) {
+             // Сравниваем полные имена детей (более надежно чем ID)
+             if (parentChildData && childrenInGroup[childId] &&
+                 parentChildData.fullName === childrenInGroup[childId]) {
+
+               if (!foundParentIds.has(userId)) {
+                 parents.push({
+                   userId,
+                   name: user.name || "Родитель",
+                   fcmToken: user.fcmToken || null,
+                   childName: parentChildData.fullName
+                 });
+                 foundParentIds.add(userId);
+                 console.log("✅ Найден родитель:", user.name, "для ребенка:", parentChildData.fullName);
+                 break; // Переходим к следующему родителю
+               }
+             }
            }
          }
        }
@@ -985,7 +995,7 @@ app.post("/send-message", verifyToken, async (req, res) => {
      for (const parent of parents) {
        if (parent.fcmToken) {
          tokens.push(parent.fcmToken);
-         console.log("✅ Токен родителя:", parent.userId, parent.name);
+         console.log("✅ Токен родителя:", parent.userId, parent.name, "- ребенок:", parent.childName);
        }
      }
 
@@ -1019,7 +1029,8 @@ app.post("/send-message", verifyToken, async (req, res) => {
      res.json({
        success: true,
        message: `Уведомления отправлены ${tokens.length} родителям`,
-       recipients: tokens.length
+       recipients: tokens.length,
+       parentDetails: parents.map(p => ({ name: p.name, child: p.childName }))
      });
 
    } catch (err) {
@@ -1086,7 +1097,6 @@ app.post("/send-message", verifyToken, async (req, res) => {
            notification: {
              title: "📅 Новое событие",
              body: notificationBody,
-             // Для Android - важное уведомление
              android: {
                priority: "high",
                notification: {
@@ -1094,7 +1104,6 @@ app.post("/send-message", verifyToken, async (req, res) => {
                  channel_id: "events_channel"
                }
              },
-             // Для iOS
              apns: {
                payload: {
                  aps: {
