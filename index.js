@@ -854,6 +854,7 @@ app.post("/send-message", verifyToken, async (req, res) => {
   }
 });
 
+
 // === Удаление невалидного FCM токена ===
 async function removeInvalidToken(invalidToken) {
   try {
@@ -951,6 +952,98 @@ async function findParentsByGroupId(groupId) {
   }
 }
 
+// === Форматирование текста уведомления ===
+function formatEventNotification(title, time, place, groupName) {
+  let notification = `📅 ${title}`;
+
+  if (time) {
+    notification += ` в ${time}`;
+  }
+
+  if (place) {
+    notification += ` (${place})`;
+  }
+
+  if (groupName) {
+    notification += ` • ${groupName}`;
+  }
+
+  return notification;
+}
+
+// === Отправка FCM уведомлений о событии ===
+async function sendEventNotifications({
+  tokens,
+  groupId,
+  groupName,
+  eventId,
+  title,
+  time,
+  place,
+  comments,
+  date,
+  notificationBody
+}) {
+  try {
+    console.log("📱 Отправка FCM уведомлений для токенов:", tokens.length);
+
+    let successful = 0;
+    let failed = 0;
+
+    for (const token of tokens) {
+      try {
+        console.log("➡️ Отправка уведомления для токена:", token.substring(0, 15) + "...");
+
+        // УПРОЩЕННЫЙ payload без android/apns настроек
+        const messagePayload = {
+          token: token,
+          notification: {
+            title: "📅 Новое событие",
+            body: notificationBody
+          },
+          data: {
+            type: "new_event",
+            groupId: String(groupId || ""),
+            groupName: String(groupName || ""),
+            eventId: String(eventId || ""),
+            title: String(title || ""),
+            time: String(time || ""),
+            place: String(place || ""),
+            comments: String(comments || ""),
+            date: String(date || ""),
+            timestamp: String(Date.now())
+          }
+        };
+
+        console.log("📨 Отправляю FCM payload:", JSON.stringify(messagePayload.data, null, 2));
+        const response = await admin.messaging().send(messagePayload);
+
+        successful++;
+        console.log("✅ Пуш отправлен для токена:", token.substring(0, 15) + "...", "| response:", response);
+
+      } catch (tokenError) {
+        failed++;
+        console.error("❌ Ошибка отправки для токена:", token.substring(0, 15) + "...", tokenError.message);
+        console.error("🔴 Детали ошибки:", tokenError);
+
+        // Удаляем невалидные токены
+        if (tokenError.code === "messaging/registration-token-not-registered") {
+          await removeInvalidToken(token);
+        }
+      }
+    }
+
+    console.log(`🎉 Уведомления о событии отправлены для ${tokens.length} получателей`);
+    console.log(`📊 Статистика: Успешно: ${successful}, Неудачно: ${failed}`);
+
+    return { successful, failed };
+
+  } catch (err) {
+    console.error("❌ Ошибка в sendEventNotifications:", err.message, err.stack);
+    return { successful: 0, failed: tokens.length };
+  }
+}
+
 // === Отправка уведомления о новом событии ===
 app.post("/send-event-notification", verifyToken, async (req, res) => {
   try {
@@ -1027,7 +1120,7 @@ app.post("/send-event-notification", verifyToken, async (req, res) => {
     console.log("📝 Текст уведомления:", notificationBody);
 
     // 4. Отправляем уведомления
-    await sendEventNotifications({
+    const sendResults = await sendEventNotifications({
       tokens,
       groupId,
       groupName: actualGroupName,
@@ -1044,10 +1137,11 @@ app.post("/send-event-notification", verifyToken, async (req, res) => {
 
     res.json({
       success: true,
-      message: `Уведомления отправлены ${tokens.length} родителям`,
-      recipients: tokens.length,
+      message: `Уведомления отправлены ${sendResults.successful} родителям`,
+      recipients: sendResults.successful,
       totalParents: parents.length,
       parentsWithTokens: tokens.length,
+      statistics: sendResults,
       parentDetails: parentsWithTokens.map(p => ({
         name: p.name,
         child: p.childName
@@ -1061,99 +1155,6 @@ app.post("/send-event-notification", verifyToken, async (req, res) => {
     });
   }
 });
-
-// === Форматирование текста уведомления ===
-function formatEventNotification(title, time, place, groupName) {
-  let notification = `📅 ${title}`;
-
-  if (time) {
-    notification += ` в ${time}`;
-  }
-
-  if (place) {
-    notification += ` (${place})`;
-  }
-
-  if (groupName) {
-    notification += ` • ${groupName}`;
-  }
-
-  return notification;
-}
-
-// === Отправка FCM уведомлений о событии ===
-// === Отправка FCM уведомлений о событии ===
-async function sendEventNotifications({
-  tokens,
-  groupId,
-  groupName,
-  eventId,
-  title,
-  time,
-  place,
-  comments,
-  date,
-  notificationBody
-}) {
-  try {
-    console.log("📱 Отправка FCM уведомлений для токенов:", tokens.length);
-
-    let successful = 0;
-    let failed = 0;
-
-    for (const token of tokens) {
-      try {
-        console.log("➡️ Отправка уведомления для токена:", token.substring(0, 15) + "...");
-
-        // УПРОЩЕННЫЙ payload без android/apns настроек
-        const messagePayload = {
-          token: token,
-          notification: {
-            title: "📅 Новое событие",
-            body: notificationBody
-          },
-          data: {
-            type: "new_event",
-            groupId: String(groupId || ""),
-            groupName: String(groupName || ""),
-            eventId: String(eventId || ""),
-            title: String(title || ""),
-            time: String(time || ""),
-            place: String(place || ""),
-            comments: String(comments || ""),
-            date: String(date || ""),
-            timestamp: String(Date.now())
-          }
-        };
-
-        console.log("📨 Отправляю FCM payload:", JSON.stringify(messagePayload.data, null, 2));
-        const response = await admin.messaging().send(messagePayload);
-
-        successful++;
-        console.log("✅ Пуш отправлен для токена:", token.substring(0, 15) + "...", "| response:", response);
-
-      } catch (tokenError) {
-        failed++;
-        console.error("❌ Ошибка отправки для токена:", token.substring(0, 15) + "...", tokenError.message);
-        console.error("🔴 Детали ошибки:", tokenError);
-
-        // Удаляем невалидные токены
-        if (tokenError.code === "messaging/registration-token-not-registered") {
-          await removeInvalidToken(token);
-        }
-      }
-    }
-
-    console.log(`🎉 Уведомления о событии отправлены для ${tokens.length} получателей`);
-    console.log(`📊 Статистика: Успешно: ${successful}, Неудачно: ${failed}`);
-
-    return { successful, failed };
-
-  } catch (err) {
-    console.error("❌ Ошибка в sendEventNotifications:", err.message, err.stack);
-    return { successful: 0, failed: tokens.length };
-  }
-}
 
 // === Health Check для мониторинга ===
 app.get("/health", (req, res) => {
@@ -1184,6 +1185,7 @@ app.get("/info", (req, res) => {
     ]
   });
 });
+
 
 // === Проверка сервера ===
 app.get("/", (req, res) => res.send("Server is running"));
