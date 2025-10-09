@@ -1082,6 +1082,7 @@ function formatEventNotification(title, time, place, groupName) {
 }
 
 // === Отправка FCM уведомлений о событии ===
+// === Отправка FCM уведомлений о событии ===
 async function sendEventNotifications({
   tokens,
   groupId,
@@ -1104,8 +1105,13 @@ async function sendEventNotifications({
       try {
         console.log("➡️ Отправка уведомления для токена:", token.substring(0, 15) + "...");
 
+        // УПРОЩЕННЫЙ payload без android/apns настроек
         const messagePayload = {
-          token,
+          token: token,
+          notification: {
+            title: "📅 Новое событие",
+            body: notificationBody
+          },
           data: {
             type: "new_event",
             groupId: String(groupId || ""),
@@ -1117,28 +1123,6 @@ async function sendEventNotifications({
             comments: String(comments || ""),
             date: String(date || ""),
             timestamp: String(Date.now())
-          },
-          notification: {
-            title: "📅 Новое событие",
-            body: notificationBody
-          },
-          // Android настройки на верхнем уровне
-          android: {
-            priority: "high",
-            notification: {
-              sound: "default",
-              channel_id: "events_channel"
-            }
-          },
-          // iOS настройки на верхнем уровне
-          apns: {
-            payload: {
-              aps: {
-                sound: "default",
-                badge: 1,
-                'content-available': 1
-              }
-            }
           }
         };
 
@@ -1151,6 +1135,7 @@ async function sendEventNotifications({
       } catch (tokenError) {
         failed++;
         console.error("❌ Ошибка отправки для токена:", token.substring(0, 15) + "...", tokenError.message);
+        console.error("🔴 Детали ошибки:", tokenError);
 
         // Удаляем невалидные токены
         if (tokenError.code === "messaging/registration-token-not-registered") {
@@ -1162,8 +1147,11 @@ async function sendEventNotifications({
     console.log(`🎉 Уведомления о событии отправлены для ${tokens.length} получателей`);
     console.log(`📊 Статистика: Успешно: ${successful}, Неудачно: ${failed}`);
 
+    return { successful, failed };
+
   } catch (err) {
     console.error("❌ Ошибка в sendEventNotifications:", err.message, err.stack);
+    return { successful: 0, failed: tokens.length };
   }
 }
 
