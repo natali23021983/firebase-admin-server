@@ -1046,6 +1046,9 @@ async function sendEventNotifications({
 
 // === Отправка уведомления о новом событии ===
 app.post("/send-event-notification", verifyToken, async (req, res) => {
+  console.log("🟢🟢🟢 ПОЛУЧЕН ЗАПРОС НА /send-event-notification 🟢🟢🟢");
+  console.log("📦 Тело запроса:", JSON.stringify(req.body, null, 2));
+  console.log("🔑 Заголовки:", JSON.stringify(req.headers, null, 2));
   try {
     const {
       groupId,
