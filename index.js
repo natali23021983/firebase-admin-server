@@ -781,79 +781,81 @@ app.post("/save-fcm-token", verifyToken, async (req, res) => {
 });
 
 
-// === Отправка сообщения с автоматическим push-уведомлением ===
-app.post("/send-message", verifyToken, async (req, res) => {
-  try {
-    const { chatId, message, messageType = "text", fileUrl, fileName } = req.body;
-    const senderId = req.user.uid;
+/app.post("/send-message", verifyToken, async (req, res) => {
+   try {
+     const { chatId, message, messageType = "text", fileUrl, fileName } = req.body;
+     const senderId = req.user.uid;
 
-    if (!chatId || !message) {
-      return res.status(400).json({ error: "chatId и message обязательны" });
-    }
+     console.log("=== 📨 НОВОЕ СООБЩЕНИЕ ===");
+     console.log("👤 От:", senderId);
+     console.log("💬 Текст:", message);
+     console.log("🆔 ChatId:", chatId);
+     console.log("📁 Тип:", messageType);
+     console.log("🌐 File:", fileUrl);
 
-    console.log("💬 Новое сообщение от:", senderId, "в чат:", chatId);
+     if (!chatId || !message) {
+       return res.status(400).json({ error: "chatId и message обязательны" });
+     }
 
-    // 1. Получаем данные отправителя
-    const senderSnap = await db.ref(`users/${senderId}`).once('value');
-    const sender = senderSnap.val();
-    const senderName = sender?.name || "Неизвестный";
+     // 1. Получаем данные отправителя
+     const senderSnap = await db.ref(`users/${senderId}`).once('value');
+     const sender = senderSnap.val();
+     const senderName = sender?.name || "Неизвестный";
 
-    // 2. Сохраняем сообщение в базу
-    const messageId = uuidv4();
-    const messageData = {
-      id: messageId,
-      senderId,
-      senderName,
-      text: message,
-      timestamp: Date.now(),
-      fileUrl: fileUrl || null,
-      fileType: messageType,
-      fileName: fileName || null
-    };
+     // 2. Сохраняем сообщение в базу
+     const messageId = uuidv4();
+     const messageData = {
+       id: messageId,
+       senderId,
+       senderName,
+       text: message,
+       timestamp: Date.now(),
+       fileUrl: fileUrl || null,
+       fileType: messageType,
+       fileName: fileName || null
+     };
 
-    // 3. ✅ ОПРЕДЕЛЯЕМ ТИП ЧАТА И СОХРАНЯЕМ В ПРАВИЛЬНЫЙ ПУТЬ
-    let chatRef;
+     // 3. Определяем тип чата
+     const isPrivateChat = await isPrivateChatId(chatId);
+     console.log("🔍 Тип чата:", isPrivateChat ? "PRIVATE" : "GROUP");
 
-    // Определяем тип чата по chatId
-    const isPrivateChat = await isPrivateChatId(chatId);
+     let chatRef;
+     if (isPrivateChat) {
+       chatRef = db.ref(`chats/private/${chatId}/messages/${messageId}`);
+       console.log("📁 Путь: chats/private/");
+     } else {
+       chatRef = db.ref(`chats/groups/${chatId}/messages/${messageId}`);
+       console.log("📁 Путь: chats/groups/");
+     }
 
-    if (isPrivateChat) {
-      // ✅ ПРИВАТНЫЙ ЧАТ: chats/private/chatId/messages
-      chatRef = db.ref(`chats/private/${chatId}/messages/${messageId}`);
-      console.log("🔒 Сохраняем в ПРИВАТНЫЙ чат:", chatId);
-    } else {
-      // ✅ ГРУППОВОЙ ЧАТ: chats/groups/chatId/messages
-      chatRef = db.ref(`chats/groups/${chatId}/messages/${messageId}`);
-      console.log("👥 Сохраняем в ГРУППОВОЙ чат:", chatId);
-    }
+     await chatRef.set(messageData);
+     console.log("✅ Сообщение сохранено в Firebase");
 
-    await chatRef.set(messageData);
-    console.log("✅ Сообщение сохранено в базу по пути:", chatRef.toString());
+     // 4. Отправляем уведомления
+     await sendChatNotification({
+       chatId,
+       senderId,
+       senderName,
+       message,
+       messageType,
+       fileUrl,
+       fileName,
+       isPrivate: isPrivateChat
+     });
 
-    // 4. Отправляем уведомления
-    await sendChatNotification({
-      chatId,
-      senderId,
-      senderName,
-      message,
-      messageType,
-      fileUrl,
-      fileName,
-      isPrivate: isPrivateChat // передаем тип чата
-    });
+     console.log("✅ Уведомления отправлены");
 
-    res.json({
-      success: true,
-      messageId,
-      timestamp: messageData.timestamp
-    });
+     res.json({
+       success: true,
+       messageId,
+       timestamp: messageData.timestamp
+     });
 
-  } catch (err) {
-    console.error("❌ Ошибка отправки сообщения:", err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
+   } catch (err) {
+     console.error("❌ Ошибка отправки сообщения:", err);
+     res.status(500).json({ error: err.message });
+   }
+ });
 
 // === Удаление невалидного FCM токена ===
 async function removeInvalidToken(invalidToken) {
