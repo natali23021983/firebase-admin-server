@@ -754,6 +754,168 @@ app.post('/generate-upload-url', verifyToken, async (req, res) => {
  }
 
 
+// === Функция отправки уведомлений о новых сообщениях ===
+async function sendChatNotification({
+  chatId,
+  senderId,
+  senderName,
+  message,
+  messageType,
+  fileUrl,
+  fileName,
+  isPrivate
+}) {
+  try {
+    console.log("🔔 Отправка уведомления для чата:", chatId);
+
+    let recipients = [];
+    let chatTitle = "";
+
+    if (isPrivate) {
+      // ✅ ПРИВАТНЫЙ ЧАТ: находим второго участника
+      const parts = chatId.split('_');
+      const otherUserId = parts.find(id => id !== senderId);
+
+      if (otherUserId) {
+        const userSnap = await db.ref(`users/${otherUserId}`).once('value');
+        const user = userSnap.val();
+        if (user && user.fcmToken) {
+          recipients.push({
+            userId: otherUserId,
+            name: user.name || "Пользователь",
+            fcmToken: user.fcmToken
+          });
+          chatTitle = user.name || "Приватный чат";
+        }
+      }
+    } else {
+      // ✅ ГРУППОВОЙ ЧАТ: находим всех участников группы
+      const groupSnap = await db.ref(`groups/${chatId}`).once('value');
+      const group = groupSnap.val();
+
+      if (group) {
+        chatTitle = group.name || "Групповой чат";
+
+        // Собираем всех учителей
+        if (group.teachers) {
+          for (const [teacherId, teacherName] of Object.entries(group.teachers)) {
+            if (teacherId !== senderId) {
+              const teacherSnap = await db.ref(`users/${teacherId}`).once('value');
+              const teacher = teacherSnap.val();
+              if (teacher && teacher.fcmToken) {
+                recipients.push({
+                  userId: teacherId,
+                  name: teacherName,
+                  fcmToken: teacher.fcmToken
+                });
+              }
+            }
+          }
+        }
+
+        // Собираем всех родителей через детей
+        if (group.children) {
+          const usersSnap = await db.ref('users').once('value');
+          const users = usersSnap.val() || {};
+
+          for (const [userId, user] of Object.entries(users)) {
+            if (user.role === "Родитель" && user.children && userId !== senderId) {
+              for (const [childId, child] of Object.entries(user.children)) {
+                if (group.children[childId]) {
+                  if (user.fcmToken) {
+                    recipients.push({
+                      userId: userId,
+                      name: user.name || "Родитель",
+                      fcmToken: user.fcmToken
+                    });
+                    break; // Добавляем родителя только один раз
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    console.log(`📨 Найдено получателей: ${recipients.length}`);
+
+    // Отправляем уведомления
+    let successful = 0;
+    for (const recipient of recipients) {
+      try {
+        const messagePayload = {
+          token: recipient.fcmToken,
+          notification: {
+            title: `💬 ${isPrivate ? senderName : chatTitle}`,
+            body: messageType === 'text' ? message : `📎 ${getFileTypeText(messageType)}`
+          },
+          data: {
+            type: "chat",
+            chatId: chatId,
+            senderId: senderId,
+            senderName: senderName,
+            message: message,
+            isGroup: String(!isPrivate),
+            timestamp: String(Date.now())
+          }
+        };
+
+        await admin.messaging().send(messagePayload);
+        successful++;
+        console.log(`✅ Уведомление отправлено для ${recipient.name}`);
+      } catch (tokenError) {
+        console.error(`❌ Ошибка отправки для ${recipient.name}:`, tokenError.message);
+
+        // Удаляем невалидные токены
+        if (tokenError.code === "messaging/registration-token-not-registered") {
+          await removeInvalidToken(recipient.fcmToken);
+        }
+      }
+    }
+
+    console.log(`🎉 Уведомления отправлены: ${successful}/${recipients.length}`);
+    return { successful, total: recipients.length };
+
+  } catch (error) {
+    console.error("❌ Ошибка в sendChatNotification:", error);
+    return { successful: 0, total: 0 };
+  }
+}
+
+// === Вспомогательная функция для текста типа файла ===
+function getFileTypeText(messageType) {
+  switch (messageType) {
+    case 'image': return 'Изображение';
+    case 'video': return 'Видео';
+    case 'audio': return 'Аудио';
+    case 'file': return 'Файл';
+    default: return 'Файл';
+  }
+}
+
+
+
+// === Удаление невалидного FCM токена ===
+async function removeInvalidToken(invalidToken) {
+  try {
+    console.log("🗑️ Удаление невалидного FCM токена:", invalidToken.substring(0, 10) + "...");
+
+    const usersSnap = await db.ref('users').once('value');
+    const users = usersSnap.val() || {};
+
+    for (const [userId, user] of Object.entries(users)) {
+      if (user.fcmToken === invalidToken) {
+        await db.ref(`users/${userId}`).update({ fcmToken: null });
+        console.log("✅ Токен удален у пользователя:", userId);
+        return;
+      }
+    }
+  } catch (err) {
+    console.error("❌ Ошибка удаления токена:", err);
+  }
+}
+
 // === Сохранение FCM токена пользователя ===
 app.post("/save-fcm-token", verifyToken, async (req, res) => {
   try {
