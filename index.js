@@ -1214,11 +1214,7 @@ function formatEventNotification(title, time, place, groupName) {
        console.log(`   ${index + 1}. ${parent.name} (ребенок: ${parent.childName})`);
      });
 
-     // 2. Получаем FCM токены родителей (убираем null/undefined)
-     const tokens = parents
-       .filter(parent => parent.fcmToken && parent.fcmToken.trim() !== "")
-       .map(parent => parent.fcmToken);
-
+     // ✅ ОСТАВЛЯЕМ логирование токенов (для отладки)
      const parentsWithTokens = parents.filter(parent => parent.fcmToken && parent.fcmToken.trim() !== "");
 
      // Логируем статус токенов
@@ -1230,51 +1226,41 @@ function formatEventNotification(title, time, place, groupName) {
        }
      });
 
-     if (tokens.length === 0) {
-       console.log("⚠️ Нет активных FCM токенов у родителей");
-       return res.json({
-         success: true,
-         message: "Событие создано, но нет активных токенов",
-         totalParents: parents.length,
-         parentsWithTokens: 0
-       });
-     }
+     console.log(`📱 Найдены активные токены: ${parentsWithTokens.length} из ${parents.length} родителей`);
 
-     console.log(`📱 Найдены активные токены: ${tokens.length} из ${parents.length} родителей`);
+     // 3. Формируем текст уведомления
+     const notificationBody = formatEventNotification(title, time, place, actualGroupName);
+     console.log("📝 Текст уведомления:", notificationBody);
 
-     /// 3. Формируем текст уведомления
-      const notificationBody = formatEventNotification(title, time, place, actualGroupName);
-      console.log("📝 Текст уведомления:", notificationBody);
+     // 4. Отправляем уведомления
+     const sendResults = await sendEventNotifications({
+       parents: parents, // ✅ ПЕРЕДАЕМ ВСЕХ РОДИТЕЛЕЙ
+       groupId,
+       groupName: actualGroupName,
+       eventId,
+       title,
+       time,
+       place,
+       comments,
+       date,
+       notificationBody
+     });
 
-      // 4. Отправляем уведомления
-      const sendResults = await sendEventNotifications({
-        parents: parents, // ✅ ПЕРЕДАЕМ ВСЕХ РОДИТЕЛЕЙ
-        groupId,
-        groupName: actualGroupName,
-        eventId,
-        title,
-        time,
-        place,
-        comments,
-        date,
-        notificationBody
-      });
+     console.log(`🎉 Уведомления о событии отправлены для ${sendResults.successful} родителей`);
 
-      console.log(`🎉 Уведомления о событии отправлены для ${sendResults.successful} родителей`);
-
-      res.json({
-        success: true,
-        message: `Уведомления отправлены ${sendResults.successful} родителям`,
-        recipients: sendResults.successful,
-        totalParents: parents.length,
-        parentsWithTokens: sendResults.successful,
-        statistics: sendResults,
-        parentDetails: parents.map(p => ({
-          name: p.name,
-          child: p.childName,
-          hasToken: !!(p.fcmToken && p.fcmToken.trim() !== "")
-        }))
-      });
+     res.json({
+       success: true,
+       message: `Уведомления отправлены ${sendResults.successful} родителям`,
+       recipients: sendResults.successful,
+       totalParents: parents.length,
+       parentsWithTokens: sendResults.successful,
+       statistics: sendResults,
+       parentDetails: parents.map(p => ({
+         name: p.name,
+         child: p.childName,
+         hasToken: !!(p.fcmToken && p.fcmToken.trim() !== "")
+       }))
+     });
 
    } catch (err) {
      console.error("❌ Ошибка отправки уведомления о событии:", err);
