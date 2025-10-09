@@ -1120,23 +1120,23 @@ async function sendEventNotifications({
           },
           notification: {
             title: "📅 Новое событие",
-            body: notificationBody,
-            // Для Android - важное уведомление
-            android: {
-              priority: "high",
-              notification: {
+            body: notificationBody
+          },
+          // Android настройки на верхнем уровне
+          android: {
+            priority: "high",
+            notification: {
+              sound: "default",
+              channel_id: "events_channel"
+            }
+          },
+          // iOS настройки на верхнем уровне
+          apns: {
+            payload: {
+              aps: {
                 sound: "default",
-                channel_id: "events_channel"
-              }
-            },
-            // Для iOS
-            apns: {
-              payload: {
-                aps: {
-                  sound: "default",
-                  badge: 1,
-                  'content-available': 1
-                }
+                badge: 1,
+                'content-available': 1
               }
             }
           }
