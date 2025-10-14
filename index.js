@@ -16,17 +16,21 @@ const logger = pino({
   level: process.env.LOG_LEVEL || (process.env.NODE_ENV === 'development' ? 'debug' : 'info')
 });
 
+// ✅ Создаём приложение Express
+const app = express();
+
+// Логирование через pino
 app.use(expressPino({ logger }));
 
-// rate limit for health endpoint (adjust values)
+// Rate limit для health endpoint
 const healthLimiter = rateLimit({
-  windowMs: 10 * 1000, // 10 seconds
-  max: 80, // max requests per window per IP
+  windowMs: 10 * 1000, // 10 секунд
+  max: 80,             // максимум запросов на IP
   standardHeaders: true,
   legacyHeaders: false
 });
-app.use('/health', healthLimiter);
 
+app.use('/health', healthLimiter);
 
 // === Конфигурация CORS ===
 app.use(cors());
@@ -1377,7 +1381,6 @@ app.post("/send-event-notification", verifyToken, async (req, res) => {
    }
  });
 
-// === Health Check для мониторинга ===
 app.get("/health", (req, res) => {
   if (process.env.NODE_ENV === "development") logger.debug("Health check выполнен");
   res.json({
@@ -1389,7 +1392,6 @@ app.get("/health", (req, res) => {
     environment: process.env.NODE_ENV || "development"
   });
 });
-
 
 // === Информация о сервере ===
 app.get("/info", (req, res) => {
