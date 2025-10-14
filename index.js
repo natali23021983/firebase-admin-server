@@ -1359,21 +1359,19 @@ app.post("/send-event-notification", verifyToken, async (req, res) => {
    }
  });
 
- // === Health Check для мониторинга ===
- app.get("/health", (req, res) => {
-   console.log("✅ Health check выполнен");
-   res.json({
-     status: "OK",
-     timestamp: new Date().toISOString(),
-     service: "Firebase Admin Server",
-     version: "1.0.0",
-     firebase: firebaseInitialized ? "connected" : "disconnected",
-     environment: process.env.NODE_ENV || "development"
-   });
-     console.log("✅ Health check выполнен");
-     res.json(healthStatus);
- });
-
+// === Health Check для мониторинга ===
+app.get("/health", (req, res) => {
+  console.log("✅ Health check выполнен");
+  const healthStatus = {
+    status: "OK",
+    timestamp: new Date().toISOString(),
+    service: "Firebase Admin Server",
+    version: "1.0.0",
+    firebase: firebaseInitialized ? "connected" : "disconnected",
+    environment: process.env.NODE_ENV || "development"
+  };
+  res.json(healthStatus);
+});
 
 // === Информация о сервере ===
 app.get("/info", (req, res) => {
@@ -1399,6 +1397,9 @@ app.get("/info", (req, res) => {
     ]
   });
 });
+
+// === Проверка сервера ===
+app.get("/", (req, res) => res.send("Server is running"));
 
 // === Обработка несуществующих маршрутов ===
 app.use((req, res) => {
@@ -1431,8 +1432,4 @@ app.listen(PORT, () => {
 });
 
 
-// === Проверка сервера ===
-app.get("/", (req, res) => res.send("Server is running"));
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server started on port ${PORT}`));
