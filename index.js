@@ -8,6 +8,25 @@ const { S3Client, PutObjectCommand, DeleteObjectCommand, DeleteObjectsCommand } 
 const bodyParser = require("body-parser");
 const path = require('path');
 const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
+const pino = require('pino');
+const expressPino = require('express-pino-logger');
+const rateLimit = require('express-rate-limit');
+
+const logger = pino({
+  level: process.env.LOG_LEVEL || (process.env.NODE_ENV === 'development' ? 'debug' : 'info')
+});
+
+app.use(expressPino({ logger }));
+
+// rate limit for health endpoint (adjust values)
+const healthLimiter = rateLimit({
+  windowMs: 10 * 1000, // 10 seconds
+  max: 80, // max requests per window per IP
+  standardHeaders: true,
+  legacyHeaders: false
+});
+app.use('/health', healthLimiter);
+
 
 // === Конфигурация CORS ===
 app.use(cors());
@@ -99,13 +118,12 @@ console.log("✅ S3 клиент инициализирован, bucket:", BUCKE
 // === Middleware логирования ===
 app.use((req, res, next) => {
   const start = Date.now();
-  console.log(`📥 ${req.method} ${req.path} - ${new Date().toISOString()}`);
+  logger.debug({ method: req.method, path: req.path, ts: new Date().toISOString() }, 'request start');
 
   res.on('finish', () => {
     const duration = Date.now() - start;
-    console.log(`📤 ${req.method} ${req.path} ${res.statusCode} - ${duration}ms`);
+    logger.info({ method: req.method, path: req.path, status: res.statusCode, duration }, 'request finished');
   });
-
   next();
 });
 
@@ -1361,17 +1379,17 @@ app.post("/send-event-notification", verifyToken, async (req, res) => {
 
 // === Health Check для мониторинга ===
 app.get("/health", (req, res) => {
-  console.log("✅ Health check выполнен");
-  const healthStatus = {
+  if (process.env.NODE_ENV === "development") logger.debug("Health check выполнен");
+  res.json({
     status: "OK",
     timestamp: new Date().toISOString(),
     service: "Firebase Admin Server",
     version: "1.0.0",
     firebase: firebaseInitialized ? "connected" : "disconnected",
     environment: process.env.NODE_ENV || "development"
-  };
-  res.json(healthStatus);
+  });
 });
+
 
 // === Информация о сервере ===
 app.get("/info", (req, res) => {
