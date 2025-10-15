@@ -1,4 +1,34 @@
 require('dotenv').config();
+
+process.on('uncaughtException', (error) => {
+  console.error('🔥 НЕОБРАБОТАННОЕ ИСКЛЮЧЕНИЕ:', error.message);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('🔥 НЕОБРАБОТАННЫЙ ПРОМИС:', reason);
+});
+
+const quickCache = new Map();
+
+// Мониторинг памяти каждые 2 минуты
+setInterval(() => {
+  const memory = process.memoryUsage();
+  console.log('📊 Memory:',
+    `RSS: ${Math.round(memory.rss / 1024 / 1024)}MB,`,
+    `Heap: ${Math.round(memory.heapUsed / 1024 / 1024)}MB`
+  );
+
+  // Очистка старых кэшей
+  if (quickCache.size > 50) {
+    const now = Date.now();
+    for (let [key, value] of quickCache.entries()) {
+      if (now - value.timestamp > 60000) { // старше 1 минуты
+        quickCache.delete(key);
+      }
+    }
+  }
+}, 120000);
+
 const express = require('express');
 const cors = require("cors");
 const admin = require('firebase-admin');
@@ -13,8 +43,16 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Multer для загрузки в память
-const upload = multer({ storage: multer.memoryStorage() });
+app.use(express.json({ limit: '5mb' })); // Уменьшили с 10mb до 5mb
+app.use(express.urlencoded({ extended: true, limit: '5mb' }));
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 5 * 1024 * 1024, // 5MB максимум
+    files: 3 // максимум 3 файла за раз
+  }
+});
 
 // === MIME types mapping ===
 const mimeTypeMapping = {
@@ -1305,16 +1343,46 @@ function formatEventNotification(title, time, place, groupName) {
    return notification;
  }
 
- // === Health Check для мониторинга ===
- app.get("/health", (req, res) => {
-   console.log("✅ Health check выполнен");
-   res.json({
-     status: "OK",
-     timestamp: new Date().toISOString(),
-     service: "Firebase Admin Server",
-     version: "1.0.0"
-   });
- });
+const keepAlive = () => {
+  setInterval(async () => {
+    try {
+      const https = require('https');
+      const options = {
+        hostname: process.env.RENDER_EXTERNAL_HOSTNAME || `firebase-admin-server-6e6o.onrender.com`,
+        port: 443,
+        path: '/health',
+        method: 'GET',
+        timeout: 10000
+      };
+
+      const req = https.request(options, (res) => {
+        console.log('💓 Keep-alive ping status:', res.statusCode);
+      });
+
+      req.on('error', (err) => {
+        console.log('💓 Keep-alive error (normal):', err.message);
+      });
+
+      req.on('timeout', () => {
+        console.log('💓 Keep-alive timeout (normal)');
+        req.destroy();
+      });
+
+      req.end();
+    } catch (error) {
+      console.log('💓 Keep-alive cycle completed');
+    }
+  }, 4 * 60 * 1000); // Каждые 4 минуты
+};
+
+
+app.get("/health", (req, res) => {
+  res.json({
+    status: "OK",
+    timestamp: Date.now(),
+    memory: Math.round(process.memoryUsage().heapUsed / 1024 / 1024) + "MB"
+  });
+});
 
 // === Информация о сервере ===
 app.get("/info", (req, res) => {
@@ -1340,4 +1408,43 @@ app.get("/info", (req, res) => {
 app.get("/", (req, res) => res.send("Server is running"));
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server started on port ${PORT}`));
+
+// Добавьте перед app.listen
+app.get("/stress-test", (req, res) => {
+  const memory = process.memoryUsage();
+  res.json({
+    status: "OK",
+    timestamp: Date.now(),
+    memory: Math.round(memory.heapUsed / 1024 / 1024) + "MB",
+    uptime: process.uptime(),
+    simple: true
+  });
+});
+
+app.get("/ping", (req, res) => {
+  res.json({ pong: Date.now(), simple: true });
+});
+
+const server = app.listen(PORT, '0.0.0.0', () => {
+  console.log(`✅ Server started on port ${PORT}`);
+  console.log(`✅ Keep-alive started`);
+  keepAlive(); // Запускаем keep-alive после старта сервера
+});
+
+// Graceful shutdown для Render
+server.keepAliveTimeout = 60000; // 60 секунд
+server.headersTimeout = 65000; // 65 секунд
+
+process.on('SIGTERM', () => {
+  console.log('🔄 SIGTERM received, shutting down gracefully');
+  server.close(() => {
+    console.log('✅ HTTP server closed');
+    process.exit(0);
+  });
+
+  // Force close после 10 секунд
+  setTimeout(() => {
+    console.log('⚠️ Forcing shutdown');
+    process.exit(1);
+  }, 10000);
+});
