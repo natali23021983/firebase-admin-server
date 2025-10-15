@@ -9,19 +9,12 @@ const bodyParser = require("body-parser");
 const path = require('path');
 const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 
-// === Конфигурация CORS ===
+const app = express();
 app.use(cors());
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+app.use(express.json());
 
-// === Multer с лимитами ===
-const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: {
-    fileSize: 10 * 1024 * 1024, // 10MB
-    files: 5
-  }
-});
+// Multer для загрузки в память
+const upload = multer({ storage: multer.memoryStorage() });
 
 // === MIME types mapping ===
 const mimeTypeMapping = {
@@ -47,34 +40,30 @@ const mimeTypeMapping = {
   'audio/wav': '.wav'
 };
 
-// === Firebase Admin SDK инициализация с проверками ===
-let firebaseInitialized = false;
-let db = null;
-let auth = null;
+// Функция для получения расширения файла по MIME type
+const getFileExtension = (mimeType) => {
+  return mimeTypeMapping[mimeType] || '.bin';
+};
 
-try {
-  const base64 = process.env.FIREBASE_CONFIG;
-  if (!base64) {
-    console.error("❌ FIREBASE_CONFIG переменная не найдена в .env");
-    process.exit(1);
-  }
+// === Firebase Admin SDK ===
+try{
+    const base64 = process.env.FIREBASE_CONFIG;
+    if (!base64) throw new Error("FIREBASE_CONFIG переменная не найдена в .env");
+    const serviceAccount = JSON.parse(Buffer.from(base64, 'base64').toString('utf8'));
 
-  const serviceAccount = JSON.parse(Buffer.from(base64, 'base64').toString('utf8'));
-
-  admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount),
-    databaseURL: process.env.FIREBASE_DB_URL
-  });
-
-  db = admin.database();
-  auth = admin.auth();
-  firebaseInitialized = true;
-  console.log("✅ Firebase инициализирован");
+    admin.initializeApp({
+      credential: admin.credential.cert(serviceAccount),
+      databaseURL: process.env.FIREBASE_DB_URL
+    });
+    console.log("✅ Firebase инициализирован");
 
 } catch (err) {
-  console.error("🔥 Критическая ошибка инициализации Firebase:", err);
-  process.exit(1);
+  console.error("🔥 Ошибка инициализации Firebase:", err);
 }
+
+
+const db = admin.database();
+const auth = admin.auth();
 
 // === Яндекс S3 ===
 const s3 = new S3Client({
@@ -85,43 +74,19 @@ const s3 = new S3Client({
     secretAccessKey: process.env.YC_SECRET_KEY,
   },
 });
-
 const BUCKET_NAME = process.env.YC_S3_BUCKET;
+console.log("BUCKET_NAME:", process.env.YC_S3_BUCKET);
 
-if (!BUCKET_NAME) {
-  console.error("❌ YC_S3_BUCKET не настроен");
-  process.exit(1);
-}
-
-console.log("✅ S3 клиент инициализирован, bucket:", BUCKET_NAME);
-
-
-// === Middleware логирования ===
-app.use((req, res, next) => {
-  const start = Date.now();
-  console.log(`📥 ${req.method} ${req.path} - ${new Date().toISOString()}`);
-
-  res.on('finish', () => {
-    const duration = Date.now() - start;
-    console.log(`📤 ${req.method} ${req.path} ${res.statusCode} - ${duration}ms`);
-  });
-
-  next();
-});
 
 
 // === Middleware проверки Firebase-токена ===
 async function verifyToken(req, res, next) {
-  if (!firebaseInitialized) {
-    return res.status(503).json({ error: "Сервис временно недоступен" });
-  }
-
   const authHeader = req.headers.authorization || "";
   const token = authHeader.startsWith("Bearer ") ? authHeader.split("Bearer ")[1] : null;
 
   if (!token) {
     console.warn("🚫 verifyToken: отсутствует заголовок Authorization");
-    return res.status(401).json({ error: "Токен не предоставлен" });
+    return res.status(401).send("Нет токена");
   }
 
   try {
@@ -131,72 +96,42 @@ async function verifyToken(req, res, next) {
     next();
   } catch (err) {
     console.error("❌ verifyToken: токен недействителен или истёк", err);
-    res.status(403).json({ error: "Неверный или просроченный токен" });
+    res.status(403).send("Неверный токен");
   }
 }
 
 
-// === Утилиты S3-загрузки/удаления с обработкой ошибок ===
+// === Утилиты S3-загрузки/удаления ===
 async function uploadToS3(buffer, fileName, contentType) {
-  try {
-    console.log(`📤 Загрузка файла в S3: ${fileName}`);
-
-    await s3.send(new PutObjectCommand({
-      Bucket: BUCKET_NAME,
-      Key: fileName,
-      Body: buffer,
-      ContentType: contentType,
-      ACL: 'public-read'
-    }));
-
-    const fileUrl = `https://${BUCKET_NAME}.storage.yandexcloud.net/${fileName}`;
-    console.log(`✅ Файл загружен: ${fileUrl}`);
-
-    return fileUrl;
-  } catch (error) {
-    console.error(`❌ Ошибка загрузки в S3: ${fileName}`, error);
-    throw new Error(`Ошибка загрузки файла: ${error.message}`);
-  }
+  await s3.send(new PutObjectCommand({
+    Bucket: BUCKET_NAME,
+    Key: fileName,
+    Body: buffer,
+    ContentType: contentType,
+    ACL: 'public-read'
+  }));
+  return `https://${BUCKET_NAME}.storage.yandexcloud.net/${fileName}`;
 }
 
 async function deleteFromS3(urls) {
-  if (!urls || urls.length === 0) return;
+  const keys = urls.map(url => {
+    const parts = url.split(`${BUCKET_NAME}/`);
+    return parts[1] ? { Key: parts[1] } : null;
+  }).filter(Boolean);
 
-  try {
-    const keys = urls.map(url => {
-      const parts = url.split(`${BUCKET_NAME}/`);
-      return parts[1] ? { Key: parts[1] } : null;
-    }).filter(Boolean);
-
-    if (keys.length === 0) {
-      console.log("⚠️ Нет валидных URL для удаления");
-      return;
-    }
-
-    console.log(`🗑️ Удаление файлов из S3: ${keys.length} файлов`);
-
-    await s3.send(new DeleteObjectsCommand({
-      Bucket: BUCKET_NAME,
-      Delete: { Objects: keys }
-    }));
-
-    console.log(`✅ Файлы удалены из S3`);
-  } catch (error) {
-    console.error("❌ Ошибка удаления из S3:", error);
-    throw new Error(`Ошибка удаления файлов: ${error.message}`);
-  }
+  if (keys.length === 0) return;
+  await s3.send(new DeleteObjectsCommand({
+    Bucket: BUCKET_NAME,
+    Delete: { Objects: keys }
+  }));
 }
 
 // === Удаление пользователя/ребёнка ===
 app.post('/deleteUserByName', async (req, res) => {
+  const fullName = req.body.fullName?.trim().toLowerCase();
+  if (!fullName) return res.status(400).send("fullName обязателен");
+
   try {
-    const fullName = req.body.fullName?.trim().toLowerCase();
-    if (!fullName) {
-      return res.status(400).json({ error: "fullName обязателен" });
-    }
-
-    console.log(`🗑️ Запрос на удаление пользователя: ${fullName}`);
-
     const usersSnap = await db.ref('users').once('value');
     const users = usersSnap.val() || {};
     let found = false;
@@ -208,21 +143,20 @@ app.post('/deleteUserByName', async (req, res) => {
       // Родитель
       if (name === fullName && role === 'родитель') {
         found = true;
-        console.log(`👨‍👩‍👧‍👦 Найден родитель для удаления: ${userId}`);
 
         // 1. Удаляем детей из групп и S3
         if (user.children) {
           const filesToDelete = [];
 
           for (const [childId, child] of Object.entries(user.children)) {
-            // Удаляем из группы по childId
+            // Удаляем из группы по childId (а не по имени!)
             if (child.group) {
               await db.ref(`groups/${child.group}/children/${childId}`).remove();
-              console.log(`✅ Ребенок удален из группы: ${child.group}`);
             }
 
             // Собираем файлы для удаления из S3
             if (child.avatarUrl) filesToDelete.push(child.avatarUrl);
+            // Добавьте другие файлы ребенка если есть
           }
 
           // Удаляем файлы из S3
@@ -238,18 +172,16 @@ app.post('/deleteUserByName', async (req, res) => {
         try {
           await auth.getUser(userId);
           await auth.deleteUser(userId);
-          console.log(`✅ Пользователь удален из Auth: ${userId}`);
         } catch (authError) {
-          console.log("ℹ️ Пользователь не найден в Auth, пропускаем:", authError.message);
+          console.log("Пользователь не найден в Auth, пропускаем:", authError.message);
         }
 
-        return res.json({ success: true, message: "Родитель и его дети удалены." });
+        return res.send("Родитель и его дети удалены.");
       }
 
       // Педагог
       if (name === fullName && role === 'педагог') {
         found = true;
-        console.log(`👨‍🏫 Найден педагог для удаления: ${userId}`);
 
         // Удаляем из всех групп
         const groupsSnap = await db.ref('groups').once('value');
@@ -258,7 +190,6 @@ app.post('/deleteUserByName', async (req, res) => {
         for (const [groupId, group] of Object.entries(groups)) {
           if (group.teachers?.[userId]) {
             await db.ref(`groups/${groupId}/teachers/${userId}`).remove();
-            console.log(`✅ Педагог удален из группы: ${groupId}`);
           }
         }
 
@@ -268,12 +199,11 @@ app.post('/deleteUserByName', async (req, res) => {
         try {
           await auth.getUser(userId);
           await auth.deleteUser(userId);
-          console.log(`✅ Педагог удален из Auth: ${userId}`);
         } catch (authError) {
-          console.log("ℹ️ Педагог не найден в Auth:", authError.message);
+          console.log("Пользователь не найден в Auth:", authError.message);
         }
 
-        return res.json({ success: true, message: "Педагог удалён." });
+        return res.send("Педагог удалён.");
       }
 
       // Отдельный ребенок (поиск ребенка по имени)
@@ -281,12 +211,10 @@ app.post('/deleteUserByName', async (req, res) => {
         for (const [childId, child] of Object.entries(user.children)) {
           if (child.fullName?.trim().toLowerCase() === fullName) {
             found = true;
-            console.log(`👶 Найден ребенок для удаления: ${childId}`);
 
             // Удаляем из группы
             if (child.group) {
               await db.ref(`groups/${child.group}/children/${childId}`).remove();
-              console.log(`✅ Ребенок удален из группы: ${child.group}`);
             }
 
             // Удаляем файлы ребенка из S3
@@ -299,33 +227,31 @@ app.post('/deleteUserByName', async (req, res) => {
             // Удаляем ребенка из пользователя
             await db.ref(`users/${userId}/children/${childId}`).remove();
 
-            return res.json({ success: true, message: "Ребёнок удалён." });
+            return res.send("Ребёнок удалён.");
           }
         }
       }
     }
 
     if (!found) {
-      console.log("❌ Пользователь не найден:", fullName);
-      return res.status(404).json({ error: "Пользователь не найден." });
+      res.status(404).send("Пользователь не найден.");
     }
   } catch (err) {
-    console.error("❌ Ошибка при deleteUserByName:", err);
-    res.status(500).json({ error: "Ошибка при удалении: " + err.message });
+    console.error("Ошибка при deleteUserByName:", err);
+    res.status(500).send("Ошибка при удалении: " + err.message);
   }
 });
 
-
-// === endpoint для удаления только ребенка ===
+// === Новый endpoint для удаления только ребенка ===
 app.post('/deleteChild', async (req, res) => {
+  const { userId, childId } = req.body;
+
+  if (!userId || !childId) {
+    return res.status(400).json({ error: "userId и childId обязательны" });
+  }
+
   try {
-    const { userId, childId } = req.body;
-
-    if (!userId || !childId) {
-      return res.status(400).json({ error: "userId и childId обязательны" });
-    }
-
-    console.log('🗑️ Запрос на удаление ребенка:', { userId, childId });
+    console.log('=== DELETE CHILD DEBUG START ===');
 
     // 1. Получаем данные ребенка
     const childRef = db.ref(`users/${userId}/children/${childId}`);
@@ -336,10 +262,11 @@ app.post('/deleteChild', async (req, res) => {
     }
 
     const child = childSnap.val();
-    const groupName = child.group;
+    const groupName = child.group; // Это НАЗВАНИЕ группы!
     const childName = child.fullName.trim();
 
-    console.log('👶 Удаление ребенка:', childName, 'Группа:', groupName);
+    console.log('👶 Имя ребенка:', `"${childName}"`);
+    console.log('🏷️ Название группы:', groupName);
 
     // 2. Находим ID группы по названию
     let groupId = null;
@@ -353,13 +280,13 @@ app.post('/deleteChild', async (req, res) => {
       console.log('Все группы:', JSON.stringify(groups, null, 2));
 
       for (const [id, groupData] of Object.entries(groups)) {
-             if (groupData.name === groupName) {
-               groupId = id;
-               console.log('✅ Найдена группа ID:', groupId);
-               break;
-             }
+        console.log(`Проверяем группу: ${id} -> ${groupData.name}`);
+        if (groupData.name === groupName) {
+          groupId = id;
+          console.log('✅ Найдена группа! ID:', groupId);
+          break;
+        }
       }
-
 
       if (!groupId) {
         console.log('❌ Группа не найдена по названию:', groupName);
@@ -370,30 +297,32 @@ app.post('/deleteChild', async (req, res) => {
     // 3. Удаляем ребенка из группы
     console.log('🔍 Ищем ребенка в группе ID:', groupId);
 
-    if (groupId) {
-       const groupChildrenRef = db.ref(`groups/${groupId}/children`);
-       const groupChildrenSnap = await groupChildrenRef.once('value');
-       const groupChildren = groupChildrenSnap.val() || {};
+    const groupChildrenRef = db.ref(`groups/${groupId}/children`);
+    const groupChildrenSnap = await groupChildrenRef.once('value');
+    const groupChildren = groupChildrenSnap.val() || {};
 
-       // Ищем ребенка по имени в группе
-       let foundGroupChildId = null;
-       for (const [groupChildId, groupChildName] of Object.entries(groupChildren)) {
-          if (groupChildName.trim() === childName) {
-              foundGroupChildId = groupChildId;
-              break;
-          }
-       }
+    console.log('👥 Дети в группе:', JSON.stringify(groupChildren, null, 2));
 
-        console.log('👥 Дети в группе:', JSON.stringify(groupChildren, null, 2));
+    // Ищем ребенка по имени в группе
+    let foundGroupChildId = null;
+    for (const [groupChildId, groupChildName] of Object.entries(groupChildren)) {
+      const trimmedGroupName = groupChildName.trim();
+      console.log(`🔎 Сравниваем: "${trimmedGroupName}" vs "${childName}"`);
 
-        if (foundGroupChildId) {
-            console.log('🗑️ Удаляем ребенка из группы');
-            await groupChildrenRef.child(foundGroupChildId).remove();
-            console.log('✅ Ребенок удален из группы');
-        } else {
-            console.log('❌ Ребенок не найден в группе');
-            return res.status(404).json({ error: "Ребенок не найден в группе" });
-        }
+      if (trimmedGroupName === childName) {
+        foundGroupChildId = groupChildId;
+        console.log('✅ Найдено совпадение! Key:', foundGroupChildId);
+        break;
+      }
+    }
+
+    if (foundGroupChildId) {
+      console.log('🗑️ Удаляем ребенка из группы');
+      await groupChildrenRef.child(foundGroupChildId).remove();
+      console.log('✅ Ребенок удален из группы');
+    } else {
+      console.log('❌ Ребенок не найден в группе');
+      return res.status(404).json({ error: "Ребенок не найден в группе" });
     }
 
     // 4. Удаляем файлы из S3
@@ -410,7 +339,7 @@ app.post('/deleteChild', async (req, res) => {
     console.log('🗑️ Удаляем ребенка из базы пользователя');
     await childRef.remove();
 
-    console.log('✅ Ребенок полностью удален');
+    console.log('=== DELETE CHILD DEBUG END ===');
 
     res.json({
       success: true,
@@ -419,7 +348,7 @@ app.post('/deleteChild', async (req, res) => {
 
   } catch (err) {
     console.error('❌ Ошибка при deleteChild:', err);
-    res.status(500).json({ error: "Ошибка при удалении ребенка: " + err.message });
+    res.status(500).json({ error: "Ошибка при удалении ребенка" });
   }
 });
 
@@ -427,52 +356,32 @@ app.post('/deleteChild', async (req, res) => {
 app.post("/update-user", async (req, res) => {
   try {
     const { fullName, newEmail } = req.body;
-    if (!fullName || !newEmail) {
-        return res.status(400).json({ error: "fullName и newEmail обязательны" });
-    }
-
-    console.log(`✏️ Запрос на обновление email: ${fullName} -> ${newEmail}`);
+    if (!fullName || !newEmail) return res.status(400).json({ error: "fullName и newEmail обязательны" });
 
     const snap = await db.ref("users").orderByChild("name").equalTo(fullName).once("value");
-    if (!snap.exists()) {
-        return res.status(404).json({ error: "Пользователь не найден" });
-    }
+    if (!snap.exists()) return res.status(404).json({ error: "Пользователь не найден" });
 
     const users = snap.val();
     const keys = Object.keys(users);
-    if (keys.length > 1) {
-        return res.status(400).json({ error: "Найдено несколько пользователей с таким именем" });
-    }
+    if (keys.length > 1) return res.status(400).json({ error: "Найдено несколько пользователей с таким именем" });
 
     const userKey = keys[0];
     const user = users[userKey];
     const userId = user.userId;
-
-    if (!userId) {
-        return res.status(400).json({ error: "userId не найден в базе" });
-    }
+    if (!userId) return res.status(400).json({ error: "userId не найден в базе" });
 
     await auth.updateUser(userId, { email: newEmail });
     await db.ref(`users/${userKey}`).update({ email: newEmail });
 
-    console.log(`✅ Email обновлен для пользователя: ${userId}`);
-
-    res.json({
-          success: true,
-          message: "Email обновлен",
-          userId,
-          updatedUser: { name: fullName, email: newEmail }
-        });
-      } catch (err) {
-        console.error("❌ Ошибка update-user:", err);
-
-        if (err.code === 'auth/email-already-exists') {
-          return res.status(400).json({ error: "Email уже используется" });
-        }
-
-        res.status(500).json({ error: "Ошибка сервера: " + err.message });
-      }
-    });
+    res.json({ message: "Email обновлен", userId, updatedUser: { name: fullName, email: newEmail } });
+  } catch (err) {
+    if (err.code === 'auth/email-already-exists') {
+      return res.status(400).json({ error: "Email уже используется" });
+    }
+    console.error("Ошибка update-user:", err);
+    res.status(500).json({ error: "Ошибка сервера: " + err.message });
+  }
+});
 
 // === Добавление и редактирование новости (через ссылки) ===
 
@@ -485,29 +394,19 @@ app.post("/news", verifyToken, async (req, res) => {
       return res.status(400).json({ error: "groupId, title и description обязательны" });
     }
 
-    console.log(`📰 ${newsId ? 'Редактирование' : 'Создание'} новости для группы: ${groupId}`);
-
     if (newsId) {
       // === Редактирование ===
       const ref = db.ref(`news/${groupId}/${newsId}`);
       const snap = await ref.once("value");
       const oldNews = snap.val();
-      if (!oldNews) {
-        return res.status(404).json({ error: "Новость не найдена" });
-      }
-
-      if (oldNews.authorId !== authorId) {
-        return res.status(403).json({ error: "Нет прав на редактирование" });
-      }
+      if (!oldNews) return res.status(404).json({ error: "Новость не найдена" });
+      if (oldNews.authorId !== authorId) return res.status(403).json({ error: "Нет прав" });
 
       // Удаляем из S3 те, которых больше нет
       const oldUrls = oldNews.mediaUrls || [];
       const keepSet = new Set(mediaUrls);
       const toDelete = oldUrls.filter(url => !keepSet.has(url));
-
-      if (toDelete.length > 0) {
-        await deleteFromS3(toDelete);
-      }
+      await deleteFromS3(toDelete);
 
       const newData = {
         title,
@@ -518,8 +417,6 @@ app.post("/news", verifyToken, async (req, res) => {
       };
 
       await ref.update(newData);
-      console.log(`✅ Новость отредактирована: ${newsId}`);
-
       return res.json({ success: true, updated: true });
     }
 
@@ -536,8 +433,6 @@ app.post("/news", verifyToken, async (req, res) => {
     };
 
     await ref.set(data);
-    console.log(`✅ Новость создана: ${id}`);
-
     return res.json({ success: true, id });
 
   } catch (err) {
@@ -555,8 +450,6 @@ app.get("/news", verifyToken, async (req, res) => {
       return res.status(400).json({ error: "groupId обязателен" });
     }
 
-    console.log(`📖 Получение новостей для группы: ${groupId}`);
-
     const snap = await db.ref(`news/${groupId}`).once("value");
     const newsData = snap.val() || {};
 
@@ -566,13 +459,11 @@ app.get("/news", verifyToken, async (req, res) => {
       description: news.description,
       groupId: groupId,
       authorId: news.authorId,
-      mediaUrls: news.mediaUrls || [],
+      mediaUrls: news.mediaUrls || [],   // 🔥 только одно поле
       timestamp: news.timestamp || 0
     }));
 
     newsList.sort((a, b) => b.timestamp - a.timestamp);
-
-    console.log(`✅ Получено новостей: ${newsList.length}`);
 
     res.json(newsList);
   } catch (err) {
@@ -592,27 +483,15 @@ app.post("/deleteNews", verifyToken, async (req, res) => {
       return res.status(400).json({ error: "groupId и newsId обязательны" });
     }
 
-    console.log(`🗑️ Удаление новости: ${newsId} из группы: ${groupId}`);
-
     const snap = await db.ref(`news/${groupId}/${newsId}`).once('value');
     const data = snap.val();
+    if (!data) return res.status(404).json({ error: "Новость не найдена" });
 
-    if (!data) {
-        return res.status(404).json({ error: "Новость не найдена" });
-    }
-
-    if (data.authorId !== authorId) {
-        return res.status(403).json({ error: "Нет прав" });
-    }
+    if (data.authorId !== authorId) return res.status(403).json({ error: "Нет прав" });
 
     const urls = data.mediaUrls || [];
-    if (urls.length > 0) {
-      await deleteFromS3(urls);
-    }
-
+    await deleteFromS3(urls);
     await db.ref(`news/${groupId}/${newsId}`).remove();
-
-    console.log(`✅ Новость удалена: ${newsId}`);
 
     res.json({ success: true });
   } catch (err) {
@@ -684,7 +563,7 @@ app.post('/generate-upload-url', verifyToken, async (req, res) => {
         console.log('Ошибка: пользователь', req.user.uid, 'не имеет доступа к чату', finalGroupId);
         return res.status(403).json({ error: "Нет доступа к этому чату" });
       }
-      console.log('Доступ к чату подтвержден для пользователя');
+      console.log('Доступ к чату подтвержден для пользователя:', req.user.uid);
     }
 
     // Генерируем уникальный ключ для файла
@@ -694,6 +573,7 @@ app.post('/generate-upload-url', verifyToken, async (req, res) => {
     const key = `${folder}${finalGroupId ? finalGroupId + '/' : ''}${timestamp}_${uniqueId}_${safeFileName}`;
 
     console.log('Финальный ключ для файла:', key);
+    console.log('ContentType:', fileType);
 
     const signedUrlParams = {
       Bucket: BUCKET_NAME,
@@ -718,7 +598,7 @@ app.post('/generate-upload-url', verifyToken, async (req, res) => {
       fileName: finalFileName,
       key,
       expiresIn: 300,
-      expiresAt: Date.now() + 300000
+      expiresAt: Date.now() + 300000 // timestamp истечения
     });
 
   } catch (err) {
@@ -752,29 +632,41 @@ app.post('/generate-upload-url', verifyToken, async (req, res) => {
 });
 
 /// Функция проверки доступа к чату
-async function checkChatAccess(userId, chatId, isPrivate) {
-    try {
-        console.log('🔐 Проверка доступа:', { userId, chatId, isPrivate });
+ async function checkChatAccess(userId, chatId, isPrivate) {
+   try {
+     console.log(
+       'Проверка доступа для пользователя:',
+       userId,
+       'к чату:',
+       chatId,
+       'тип:',
+       isPrivate ? 'private' : 'group'
+     );
 
-        if (isPrivate) {
-            // Для приватных чатов: проверяем участников по chatId
-            const parts = chatId.split('_');
-            const hasAccess = parts.includes(userId);
-            console.log('🔒 Приватный чат доступ:', hasAccess);
-            return hasAccess;
-        } else {
-            // Для групповых чатов - проверяем существование группы
-            const groupRef = db.ref(`chats/groups/${chatId}`);
-            const groupSnap = await groupRef.once('value');
-            const exists = groupSnap.exists();
-            console.log('👥 Групповой чат доступ:', exists);
-            return exists;
-        }
-    } catch (error) {
-      console.error('❌ Ошибка проверки доступа к чату:', error);
-      return false;
-    }
-}
+     if (isPrivate) {
+       // Для приватных чатов: проверяем участников по chatId
+       const parts = chatId.split('_');
+       const hasAccess = parts.includes(userId);
+       console.log('Приватный чат доступ:', hasAccess, 'участники:', parts);
+       return hasAccess;
+     } else {
+       // Для групповых чатов - проверяем существование группы
+       const groupRef = db.ref(`chats/groups/${chatId}`);
+       const groupSnap = await groupRef.once('value');
+
+       if (!groupSnap.exists()) {
+         console.log('Групповой чат не найден:', chatId);
+         return false;
+       }
+
+       console.log('✅ Групповой чат существует, доступ разрешен');
+       return true;
+     }
+   } catch (error) {
+     console.error('Ошибка проверки доступа к чату:', error);
+     return false;
+   }
+ }
 
  // ✅ Функция для определения типа чата по chatId
  async function isPrivateChatId(chatId) {
@@ -825,118 +717,6 @@ async function checkChatAccess(userId, chatId, isPrivate) {
      return chatId.includes('_');
    }
  }
-
-
-// === Вспомогательная функция для текста типа файла ===
-function getFileTypeText(messageType) {
-  switch (messageType) {
-    case 'image': return 'Изображение';
-    case 'video': return 'Видео';
-    case 'audio': return 'Аудио';
-    case 'file': return 'Файл';
-    default: return 'Файл';
-  }
-}
-
-// === Удаление невалидного FCM токена ===
-async function removeInvalidToken(invalidToken) {
-  try {
-    console.log("🗑️ Удаление невалидного FCM токена");
-
-    const usersSnap = await db.ref('users').once('value');
-    const users = usersSnap.val() || {};
-
-    for (const [userId, user] of Object.entries(users)) {
-      if (user.fcmToken === invalidToken) {
-        await db.ref(`users/${userId}`).update({ fcmToken: null });
-        console.log("✅ Токен удален у пользователя:", userId);
-        return { success: true, userId };
-      }
-    }
-
-    console.log("⚠️ Токен не найден в базе пользователей");
-    return { success: false, message: "Токен не найден" };
-
-  } catch (err) {
-    console.error("❌ Ошибка удаления токена:", err);
-    return { success: false, error: err.message };
-  }
-}
-
-// === Получение названия группы ===
-async function getGroupName(groupId) {
-  try {
-    const groupSnap = await db.ref(`groups/${groupId}/name`).once('value');
-    const groupName = groupSnap.val() || `Группа ${groupId}`;
-    console.log("🏷️ Название группы:", groupName);
-    return groupName;
-  } catch (error) {
-    console.error("❌ Ошибка получения названия группы:", error);
-    return `Группа ${groupId}`;
-  }
-}
-
-// === Поиск родителей по ID группы ===
-async function findParentsByGroupId(groupId) {
-  try {
-    console.log("🔍 Поиск родителей для группы:", groupId);
-
-    // 1. Получаем детей из группы
-    const groupSnap = await db.ref(`groups/${groupId}/children`).once('value');
-    const childrenInGroup = groupSnap.val() || {};
-    const childIds = Object.keys(childrenInGroup);
-
-    console.log("👶 Дети в группе:", childIds.length);
-
-    if (childIds.length === 0) return [];
-
-    // 2. Ищем родителей этих детей
-    const usersSnap = await db.ref('users').once('value');
-    const users = usersSnap.val() || {};
-    const parents = [];
-    const foundParentIds = new Set();
-
-    for (const [userId, user] of Object.entries(users)) {
-      if (user.role === "Родитель" && user.children) {
-
-        // Получаем актуальные данные пользователя
-        const userDataSnap = await db.ref(`users/${userId}`).once('value');
-        const userData = userDataSnap.val() || {};
-
-        for (const childId of childIds) {
-          const childNameInGroup = childrenInGroup[childId];
-
-          for (const [parentChildId, parentChildData] of Object.entries(user.children)) {
-            if (parentChildData && parentChildData.fullName === childNameInGroup) {
-
-              if (!foundParentIds.has(userId)) {
-                parents.push({
-                  userId: userId,
-                  name: user.name || "Родитель",
-                  fcmToken: user.fcmToken || null,
-                  childId: parentChildId,
-                  childName: parentChildData.fullName,
-                  childBirthDate: parentChildData.birthDate || "",
-                  childGroup: groupId
-                });
-                foundParentIds.add(userId);
-                console.log(`   ✅ Родитель найден: ${user.name} -> ${parentChildData.fullName}`);
-                break;
-              }
-            }
-          }
-        }
-      }
-    }
-
-    console.log(`👨‍👩‍👧‍👦 Найдено родителей: ${parents.length}`);
-    return parents;
-
-  } catch (error) {
-    console.error("❌ Ошибка поиска родителей:", error);
-    return [];
-  }
-}
 
 
 // === Функция отправки уведомлений о новых сообщениях ===
@@ -1014,7 +794,7 @@ async function sendChatNotification({
                       name: user.name || "Родитель",
                       fcmToken: user.fcmToken
                     });
-                    break;
+                    break; // Добавляем родителя только один раз
                   }
                 }
               }
@@ -1069,13 +849,29 @@ async function sendChatNotification({
   }
 }
 
+// === Вспомогательная функция для текста типа файла ===
+function getFileTypeText(messageType) {
+  switch (messageType) {
+    case 'image': return 'Изображение';
+    case 'video': return 'Видео';
+    case 'audio': return 'Аудио';
+    case 'file': return 'Файл';
+    default: return 'Файл';
+  }
+}
+
 /// === Отправка сообщения с автоматическим push-уведомлением ===
-app.post("/send-message", verifyToken, async (req, res) => {
+ app.post("/send-message", verifyToken, async (req, res) => {
    try {
      const { chatId, message, messageType = "text", fileUrl, fileName } = req.body;
      const senderId = req.user.uid;
-     console.log("📨 Новое сообщение:", { senderId, chatId, messageType });
 
+     console.log("=== 📨 НОВОЕ СООБЩЕНИЕ ===");
+     console.log("👤 От:", senderId);
+     console.log("💬 Текст:", message);
+     console.log("🆔 ChatId:", chatId);
+     console.log("📁 Тип:", messageType);
+     console.log("🌐 File:", fileUrl);
 
      if (!chatId || !message) {
        return res.status(400).json({ error: "chatId и message обязательны" });
@@ -1109,6 +905,8 @@ app.post("/send-message", verifyToken, async (req, res) => {
        chatRef = db.ref(`chats/private/${chatId}/messages/${messageId}`);
        console.log("📁 Путь: chats/private/");
      } else {
+       // Для групповых чатов - ИСПРАВЛЕННЫЙ ПУТЬ
+       // Используем правильный путь: chats/groups/{groupId}/messages/{messageId}
        chatRef = db.ref(`chats/groups/${chatId}/messages/${messageId}`);
        console.log("📁 Путь: chats/groups/");
      }
@@ -1169,6 +967,7 @@ app.post("/save-fcm-token", verifyToken, async (req, res) => {
 });
 
 
+
 // === Форматирование текста уведомления ===
 function formatEventNotification(title, time, place, groupName) {
   let notification = `📅 ${title}`;
@@ -1189,8 +988,109 @@ function formatEventNotification(title, time, place, groupName) {
 }
 
 
+// === Удаление невалидного FCM токена ===
+ async function removeInvalidToken(invalidToken) {
+   try {
+     console.log("🗑️ Удаление невалидного FCM токена:", invalidToken.substring(0, 15) + "...");
+
+     const usersSnap = await db.ref('users').once('value');
+     const users = usersSnap.val() || {};
+
+     for (const [userId, user] of Object.entries(users)) {
+       if (user.fcmToken === invalidToken) {
+         await db.ref(`users/${userId}`).update({ fcmToken: null });
+         console.log("✅ Токен удален у пользователя:", userId);
+         return { success: true, userId };
+       }
+     }
+
+     console.log("⚠️ Токен не найден в базе пользователей");
+     return { success: false, message: "Токен не найден" };
+
+   } catch (err) {
+     console.error("❌ Ошибка удаления токена:", err);
+     return { success: false, error: err.message };
+   }
+ }
+
+ // === Получение названия группы ===
+ async function getGroupName(groupId) {
+   try {
+     const groupSnap = await db.ref(`groups/${groupId}/name`).once('value');
+     const groupName = groupSnap.val() || `Группа ${groupId}`;
+     console.log("🏷️ Название группы получено:", groupName);
+     return groupName;
+   } catch (error) {
+     console.error("❌ Ошибка получения названия группы:", error);
+     return `Группа ${groupId}`;
+   }
+ }
+
+ // === Поиск родителей по ID группы ===
+ async function findParentsByGroupId(groupId) {
+   try {
+     console.log("🔍 Поиск родителей для группы:", groupId);
+
+     // 1. Получаем детей из группы
+     const groupSnap = await db.ref(`groups/${groupId}/children`).once('value');
+     const childrenInGroup = groupSnap.val() || {};
+     const childIds = Object.keys(childrenInGroup);
+
+     console.log("👶 Дети в группе:", childIds.length, childIds);
+
+     if (childIds.length === 0) return [];
+
+     // 2. Ищем родителей этих детей
+     const usersSnap = await db.ref('users').once('value');
+     const users = usersSnap.val() || {};
+     const parents = [];
+     const foundParentIds = new Set();
+
+     for (const [userId, user] of Object.entries(users)) {
+       if (user.role === "Родитель" && user.children) {
+
+         // ✅ ПОЛУЧАЕМ ДАННЫЕ ПОЛЬЗОВАТЕЛЯ
+         const userDataSnap = await db.ref(`users/${userId}`).once('value');
+         const userData = userDataSnap.val() || {};
+
+         for (const childId of childIds) {
+           const childNameInGroup = childrenInGroup[childId];
+
+           for (const [parentChildId, parentChildData] of Object.entries(user.children)) {
+             if (parentChildData && parentChildData.fullName === childNameInGroup) {
+
+               if (!foundParentIds.has(userId)) {
+                 // ✅ СОБИРАЕМ ВСЕ ДАННЫЕ РОДИТЕЛЯ
+                 parents.push({
+                   userId: userId,
+                   name: user.name || "Родитель",
+                   fcmToken: user.fcmToken || null,
+                   childId: parentChildId, // ✅ ID ребенка
+                   childName: parentChildData.fullName,
+                   childBirthDate: parentChildData.birthDate || "", // ✅ дата рождения
+                   childGroup: groupId
+                 });
+                 foundParentIds.add(userId);
+                 console.log(`   ✅ СОВПАДЕНИЕ: ${user.name} -> ${parentChildData.fullName}`);
+                 break;
+               }
+             }
+           }
+         }
+       }
+     }
+
+     console.log(`👨‍👩‍👧‍👦 Найдено родителей: ${parents.length}`);
+     return parents;
+
+   } catch (error) {
+     console.error("❌ Ошибка поиска родителей:", error);
+     return [];
+   }
+ }
+
  /// === Отправка FCM уведомлений о событии ===
-async function sendEventNotifications({
+  async function sendEventNotifications({
     parents, // ✅ ПЕРЕДАЕМ ВСЕХ РОДИТЕЛЕЙ С ИХ ДАННЫМИ
     groupId,
     groupName,
@@ -1212,7 +1112,7 @@ async function sendEventNotifications({
 
       for (const parent of parentsWithTokens) {
         try {
-          console.log(`➡️ Отправка уведомления для ${parent.name}`);
+          console.log(`➡️ Отправка уведомления для ${parent.name}, токен:`, parent.fcmToken.substring(0, 15) + "...");
 
           // ✅ ДИНАМИЧЕСКИЕ ДАННЫЕ КАЖДОГО РОДИТЕЛЯ
           const messagePayload = {
@@ -1222,6 +1122,7 @@ async function sendEventNotifications({
               body: notificationBody
             },
             data: {
+              // ✅ ОСНОВНЫЕ ДАННЫЕ ДЛЯ ОТКРЫТИЯ
               type: "new_event",
               autoOpenFragment: "events",
               groupId: String(groupId || ""),
@@ -1233,17 +1134,23 @@ async function sendEventNotifications({
               comments: String(comments || ""),
               date: String(date || ""),
               timestamp: String(Date.now()),
-              childId: parent.childId || "", //
+
+              // ✅ ДИНАМИЧЕСКИЕ ДАННЫЕ РОДИТЕЛЯ
+              childId: parent.childId || "", // ✅ ДОБАВЬТЕ childId В findParentsByGroupId
               userId: parent.userId || "",
               childFullName: parent.childName || "",
               childGroup: String(groupName || ""),
-              childBirthDate: parent.childBirthDate || ""
+              childBirthDate: parent.childBirthDate || "" // ✅ ДОБАВЬТЕ В findParentsByGroupId
             }
           };
 
+          console.log("📨 Отправляю FCM payload для", parent.name);
+          console.log("   Данные:", JSON.stringify(messagePayload.data, null, 2));
+
           const response = await admin.messaging().send(messagePayload);
+
           successful++;
-          console.log("✅ Пуш отправлен для", parent.name);
+          console.log("✅ Пуш отправлен для", parent.name, "| response:", response);
 
         } catch (tokenError) {
           failed++;
@@ -1273,8 +1180,8 @@ async function sendEventNotifications({
   }
 
  // === Отправка уведомления о новом событии ===
-app.post("/send-event-notification", verifyToken, async (req, res) => {
-   console.log("🟢 Запрос на отправку уведомления о событии");
+ app.post("/send-event-notification", verifyToken, async (req, res) => {
+   console.log("🟢🟢🟢 ПОЛУЧЕН ЗАПРОС НА /send-event-notification 🟢🟢🟢");
    console.log("📦 Тело запроса:", JSON.stringify(req.body, null, 2));
 
    try {
@@ -1296,11 +1203,15 @@ app.post("/send-event-notification", verifyToken, async (req, res) => {
          error: "groupId, eventId, title обязательны"
        });
      }
-     console.log("🔔 Данные события:", { groupId, title, time, date });
+
+     console.log("🔔 Запрос на отправку уведомления о событии:");
+     console.log("   - Группа:", groupId, groupName);
+     console.log("   - Событие:", title, time);
+     console.log("   - Дата:", date);
 
      // Получаем настоящее название группы
      const actualGroupName = await getGroupName(groupId);
-     console.log("Название группы: ", actualGroupName);
+     console.log("   - Название группы:", actualGroupName);
 
      // 1. Находим родителей группы
      const parents = await findParentsByGroupId(groupId);
@@ -1319,16 +1230,27 @@ app.post("/send-event-notification", verifyToken, async (req, res) => {
        console.log(`   ${index + 1}. ${parent.name} (ребенок: ${parent.childName})`);
      });
 
+     // ✅ ОСТАВЛЯЕМ логирование токенов (для отладки)
      const parentsWithTokens = parents.filter(parent => parent.fcmToken && parent.fcmToken.trim() !== "");
-     console.log(`📱 Активные токены: ${parentsWithTokens.length} из ${parents.length}`);
 
-     // 2. Формируем текст уведомления
+     // Логируем статус токенов
+     parents.forEach(parent => {
+       if (parent.fcmToken && parent.fcmToken.trim() !== "") {
+         console.log("✅ Токен родителя:", parent.userId, parent.name, "- ребенок:", parent.childName);
+       } else {
+         console.log("❌ Нет токена у родителя:", parent.name);
+       }
+     });
+
+     console.log(`📱 Найдены активные токены: ${parentsWithTokens.length} из ${parents.length} родителей`);
+
+     // 3. Формируем текст уведомления
      const notificationBody = formatEventNotification(title, time, place, actualGroupName);
      console.log("📝 Текст уведомления:", notificationBody);
 
-     // 3. Отправляем уведомления
+     // 4. Отправляем уведомления
      const sendResults = await sendEventNotifications({
-       parents: parents,
+       parents: parents, // ✅ ПЕРЕДАЕМ ВСЕХ РОДИТЕЛЕЙ
        groupId,
        groupName: actualGroupName,
        eventId,
@@ -1348,7 +1270,12 @@ app.post("/send-event-notification", verifyToken, async (req, res) => {
        recipients: sendResults.successful,
        totalParents: parents.length,
        parentsWithTokens: sendResults.successful,
-       statistics: sendResults
+       statistics: sendResults,
+       parentDetails: parents.map(p => ({
+         name: p.name,
+         child: p.childName,
+         hasToken: !!(p.fcmToken && p.fcmToken.trim() !== "")
+       }))
      });
 
    } catch (err) {
@@ -1359,77 +1286,58 @@ app.post("/send-event-notification", verifyToken, async (req, res) => {
    }
  });
 
-// === Health Check для мониторинга ===
-app.get("/health", (req, res) => {
-  console.log("✅ Health check выполнен");
-  const healthStatus = {
-    status: "OK",
-    timestamp: new Date().toISOString(),
-    service: "Firebase Admin Server",
-    version: "1.0.0",
-    firebase: firebaseInitialized ? "connected" : "disconnected",
-    environment: process.env.NODE_ENV || "development"
-  };
-  res.json(healthStatus);
-});
+ // === Форматирование текста уведомления ===
+ function formatEventNotification(title, time, place, groupName) {
+   let notification = `📅 ${title}`;
+
+   if (time) {
+     notification += ` в ${time}`;
+   }
+
+   if (place) {
+     notification += ` (${place})`;
+   }
+
+   if (groupName) {
+     notification += ` • ${groupName}`;
+   }
+
+   return notification;
+ }
+
+ // === Health Check для мониторинга ===
+ app.get("/health", (req, res) => {
+   console.log("✅ Health check выполнен");
+   res.json({
+     status: "OK",
+     timestamp: new Date().toISOString(),
+     service: "Firebase Admin Server",
+     version: "1.0.0"
+   });
+ });
 
 // === Информация о сервере ===
 app.get("/info", (req, res) => {
   console.log("ℹ️ Запрос информации о сервере");
   res.json({
     service: "Firebase Admin Notification Server",
-    version: "1.0.0",
     endpoints: {
       "POST /send-event-notification": "Отправка уведомлений о новых событиях",
-      "POST /send-message": "Отправка сообщений в чат",
-      "POST /generate-upload-url": "Генерация URL для загрузки файлов",
-      "GET /news": "Получение новостей",
-      "POST /news": "Создание/редактирование новостей",
       "GET /health": "Проверка работоспособности сервера",
       "GET /info": "Информация о сервере"
     },
     features: [
-      "FCM уведомления о событиях",
-      "Чат с файлами",
-      "Загрузка файлов в S3",
-      "Управление новостями",
-      "Автоматическое удаление невалидных токенов"
+      "Отправка FCM уведомлений о событиях ВСЕМ родителям группы",
+      "Автоматическое удаление невалидных токенов",
+      "Поиск родителей по группе",
+      "Расширенное логирование"
     ]
   });
 });
 
+
 // === Проверка сервера ===
 app.get("/", (req, res) => res.send("Server is running"));
 
-// === Обработка несуществующих маршрутов ===
-app.use((req, res) => {
-  console.log(`❌ Маршрут не найден: ${req.method} ${req.path}`);
-  res.status(404).json({
-    error: "Маршрут не найден",
-    path: req.path,
-    method: req.method
-  });
-});
-
-// === Обработка непредвиденных ошибок ===
-app.use((err, req, res, next) => {
-  console.error("💥 Непредвиденная ошибка:", err);
-  res.status(500).json({
-    error: "Внутренняя ошибка сервера",
-    message: process.env.NODE_ENV === 'development' ? err.message : 'Something went wrong'
-  });
-});
-
-// === Запуск сервера ===
 const PORT = process.env.PORT || 3000;
-
-app.listen(PORT, () => {
-  console.log(`🚀 Server started on port ${PORT}`);
-  console.log(`📊 Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`🔧 Firebase: ${firebaseInitialized ? '✅' : '❌'}`);
-  console.log(`🌐 S3 Bucket: ${BUCKET_NAME}`);
-  console.log(`⏰ Started at: ${new Date().toISOString()}`);
-});
-
-
-
+app.listen(PORT, () => console.log(`Server started on port ${PORT}`));
