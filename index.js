@@ -1404,8 +1404,28 @@ app.get("/info", (req, res) => {
 });
 
 
-app.get("/ping", (req, res) => {
-  res.json({ pong: Date.now(), simple: true });
+app.get("/ping", async (req, res) => {
+  const start = Date.now();
+
+  // Тест Firebase
+  const fbStart = Date.now();
+  await db.ref('.info/connected').once('value');
+  const fbTime = Date.now() - fbStart;
+
+  // Тест S3
+  const s3Start = Date.now();
+  // Простая S3 операция...
+  const s3Time = Date.now() - s3Start;
+
+  res.json({
+    pong: Date.now(),
+    simple: true,
+    diagnostics: {
+      firebase: `${fbTime}ms`,
+      s3: `${s3Time}ms`,
+      total: `${Date.now() - start}ms`
+    }
+  });
 });
 
 
