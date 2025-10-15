@@ -1403,6 +1403,12 @@ app.get("/info", (req, res) => {
   });
 });
 
+
+app.get("/ping", (req, res) => {
+  res.json({ pong: Date.now(), simple: true });
+});
+
+
 // Добавьте перед app.listen
 app.get("/stress-test", (req, res) => {
   const memory = process.memoryUsage();
@@ -1415,9 +1421,7 @@ app.get("/stress-test", (req, res) => {
   });
 });
 
-app.get("/ping", (req, res) => {
-  res.json({ pong: Date.now(), simple: true });
-});
+
 
 // === Проверка сервера ===
 app.get("/", (req, res) => res.send("Server is running"));
