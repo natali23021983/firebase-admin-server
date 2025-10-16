@@ -1465,47 +1465,53 @@ app.get("/info", (req, res) => {
   });
 });
 
-app.get("/ping", async (req, res) => {
-  const start = Date.now();
-  const diagnostics = {};
+// Лёгкий и быстрый /ping endpoint
+app.get('/ping', async (req, res) => {
+  const now = Date.now();
 
-  try {
-    const fbStart = Date.now();
-    await db.ref('.info/connected').once('value');
-    diagnostics.firebase = `${Date.now() - fbStart}ms`;
-
-    const s3Start = Date.now();
-    try {
-      await s3.send(new PutObjectCommand({
-        Bucket: BUCKET_NAME,
-        Key: 'ping-test',
-        Body: Buffer.from('test'),
-        ContentType: 'text/plain'
-      })).catch(() => {});
-      diagnostics.s3 = `${Date.now() - s3Start}ms`;
-    } catch (s3Error) {
-      diagnostics.s3 = `error: ${s3Error.message}`;
-    }
-
-    const cacheStart = Date.now();
-    const cacheSize = quickCache.size;
-    diagnostics.cache = `${Date.now() - cacheStart}ms (size: ${cacheSize})`;
-
-    diagnostics.total = `${Date.now() - start}ms`;
-
-    res.json({
-      pong: Date.now(),
-      simple: true,
-      diagnostics
-    });
-
-  } catch (error) {
-    res.status(500).json({
-      error: "Diagnostics failed",
-      message: error.message
+  // Если есть кэшированные диагностические данные — возвращаем их (чтобы не выполнять тяжёлые проверки на каждый ping)
+  if (quickCache && quickCache.has && quickCache.get('lastDiagnostics')) {
+    return res.json({
+      status: 'ok',
+      cached: true,
+      diagnostics: quickCache.get('lastDiagnostics'),
+      timestamp: Date.now()
     });
   }
+
+  // Быстрый ответ: не выполняем S3 put и не ждём дорогих операций.
+  // Опционально: запускаем проверку диагностик асинхронно и сохраняем в кэше для будущих ping'ов.
+  (async () => {
+    try {
+      const diagnostics = {};
+      const fbStart = Date.now();
+      // небольшой таймаут на Firebase check — если не ответил быстро — пропускаем
+      const fbPromise = db.ref('.info/connected').once('value');
+      const fb = await Promise.race([
+        fbPromise,
+        new Promise((_, rej) => setTimeout(() => rej(new Error('fb-timeout')), 500))
+      ]);
+      diagnostics.firebase = `${Date.now() - fbStart}ms`;
+      // другие длительные проверки (S3) — выполняем, но НЕ блокируя основной ответ
+      // пример: await s3.send(...) — можно выполнять здесь, но без ожидания ответа для клиента
+      // сохраняем в кэше
+      if (quickCache && quickCache.set) {
+        quickCache.set('lastDiagnostics', diagnostics, 60 * 1000); // TTL 60s
+      }
+    } catch (err) {
+      // не мешаем основному ответу
+      console.warn('Async diagnostics failed (non-blocking):', err.message || err);
+    }
+  })();
+
+  // Немедленный ответ клиенту
+  res.json({
+    status: 'ok',
+    cached: false,
+    timestamp: now
+  });
 });
+
 
 // Улучшенный stress-test
 app.get("/stress-test", async (req, res) => {
