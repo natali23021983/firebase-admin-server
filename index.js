@@ -3075,24 +3075,25 @@ app.get("/metrics", (req, res) => {
 });
 
 // 🔥 ИЗМЕНЕНО: Оптимизированный keep-alive
+// === 🔥 KEEP-ALIVE ФУНКЦИЯ ===
 const keepAlive = () => {
   setInterval(async () => {
     try {
       const https = require('https');
       const options = {
-        hostname: process.env.RENDER_EXTERNAL_HOSTNAME || `firebase-admin-server-6e6o.onrender.com`,
+        hostname: process.env.RENDER_EXTERNAL_HOSTNAME || 'firebase-admin-server-6e6o.onrender.com',
         port: 443,
-        path: '/ping', // 🔥 ИЗМЕНЕНО: используем /ping вместо /health
+        path: '/ping', // 🔥 Пингуем диагностический эндпоинт
         method: 'GET',
-        timeout: 5000 // 🔥 ИЗМЕНЕНО: уменьшен таймаут
+        timeout: 5000
       };
 
       const req = https.request(options, (res) => {
-        console.log('💓 Keep-alive статус:', res.statusCode);
+        console.log(`💓 Keep-alive статус: ${res.statusCode}`);
       });
 
       req.on('error', (err) => {
-        console.log('💓 Keep-alive ошибка (нормально):', err.message);
+        console.log(`💓 Keep-alive ошибка: ${err.message}`);
       });
 
       req.on('timeout', () => {
@@ -3102,10 +3103,11 @@ const keepAlive = () => {
 
       req.end();
     } catch (error) {
-      console.log('💓 Keep-alive цикл завершен');
+      console.log('💓 Ошибка цикла keep-alive:', error.message);
     }
-  }, 4 * 60 * 1000); // 4 минуты
+  }, 4 * 60 * 1000); // 🔥 Каждые 4 минуты (240 сек)
 };
+
 
 app.get("/health", (req, res) => {
   const memory = process.memoryUsage();
