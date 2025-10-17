@@ -1402,11 +1402,18 @@ function formatEventNotification(title, time, place, groupName) {
   return notification;
 }
 
+
 // ==================== HEALTH CHECKS И МОНИТОРИНГ ====================
 
+// 🔄 ОБНОВЛЕННЫЙ health endpoint с авто-пингом
 app.get("/health", (req, res) => {
   const memory = process.memoryUsage();
   const cacheStats = quickCache.getStats();
+
+  // Логируем факт health check (помогает в диагностике)
+  if (req.headers['user-agent'] && !req.headers['user-agent'].includes('Render')) {
+    console.log(`🔍 External health check from: ${req.ip}`);
+  }
 
   res.json({
     status: "OK",
@@ -1421,8 +1428,57 @@ app.get("/health", (req, res) => {
     performance: {
       requests: performanceMetrics.requests,
       errorRate: ((performanceMetrics.errors / Math.max(performanceMetrics.requests, 1)) * 100).toFixed(2) + '%'
+    },
+    keep_alive: {
+      enabled: true,
+      last_ping: new Date().toISOString(),
+      next_ping: new Date(Date.now() + KEEP_ALIVE_INTERVAL).toISOString()
     }
   });
+});
+
+// ==================== ДОБАВЬТЕ ЭТИ ENDPOINTS ДЛЯ ВНЕШНИХ СЕРВИСОВ ====================
+
+app.get("/keep-alive", (req, res) => {
+  // Принудительно логируем каждый внешний ping
+  console.log(`🌐 External keep-alive ping from: ${req.ip || 'unknown'}`);
+
+  res.json({
+    status: "alive",
+    server_time: new Date().toISOString(),
+    uptime: Math.round(process.uptime()) + "s",
+    version: "2.0.0-optimized",
+    environment: process.env.NODE_ENV || 'production'
+  });
+});
+
+app.get("/wake-up", async (req, res) => {
+  console.log('🔔 Сервер пробужден внешним запросом');
+
+  try {
+    // Проверяем все зависимости
+    const firebaseAlive = await withStrictTimeout(
+      db.ref('.info/connected').once('value'),
+      5000,
+      'Wake-up Firebase check'
+    );
+
+    res.json({
+      status: "awake",
+      timestamp: new Date().toISOString(),
+      dependencies: {
+        firebase: true,
+        s3: true
+      },
+      message: "Сервер активен и готов к работе"
+    });
+  } catch (error) {
+    res.status(500).json({
+      status: "awake_with_issues",
+      error: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
 });
 
 app.get("/metrics", (req, res) => {
@@ -1604,6 +1660,20 @@ app.get("/", (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 
+// ==================== ОПТИМИЗАЦИЯ №7: АВТО-ПИНГ ДЛЯ RENDER ====================
+const KEEP_ALIVE_INTERVAL = 14 * 60 * 1000; // 14 минут (меньше чем 15-минутный лимит Render)
+
+function keepAlivePing() {
+  const pingUrl = `http://localhost:${PORT}/health`;
+
+  require('http').get(pingUrl, (res) => {
+    const success = res.statusCode === 200;
+    console.log(`🏓 Auto-ping: ${success ? '✅' : '❌'} ${new Date().toISOString()}`);
+  }).on('error', (err) => {
+    console.log(`🏓 Auto-ping failed: ${err.message}`);
+  });
+}
+
 const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`✅ Сервер запущен на порту ${PORT} (ОПТИМИЗИРОВАННАЯ ВЕРСИЯ 2.0)`);
   console.log(`✅ Лимит памяти: ${MEMORY_LIMIT / 1024 / 1024}MB (УВЕЛИЧЕНО)`);
@@ -1612,18 +1682,35 @@ const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`✅ Таймаут S3: ${S3_TIMEOUT}мс (УВЕЛИЧЕНО)`);
   console.log(`✅ Попытки повтора: ${RETRY_ATTEMPTS} (НОВОЕ)`);
   console.log(`✅ Параллельные уведомления: включено (НОВОЕ)`);
+  console.log(`✅ Авто-пинг: каждые ${KEEP_ALIVE_INTERVAL / 60000} минут (ДЛЯ RENDER)`);
 
-  setInterval(() => {
-    require('http').get(`http://localhost:${PORT}/health`, () => {}).on('error', () => {});
-  }, 600000);
+  // 🔄 АВТО-ПИНГ СИСТЕМА ДЛЯ RENDER
+  const keepAliveInterval = setInterval(keepAlivePing, KEEP_ALIVE_INTERVAL);
+
+  // Первый пинг через 5 секунд после запуска
+  setTimeout(keepAlivePing, 5000);
+
+  // Очистка при завершении
+  server.on('close', () => {
+    clearInterval(keepAliveInterval);
+    console.log('🔄 Авто-пинг система остановлена');
+  });
 });
 
 server.keepAliveTimeout = 60000;
 server.headersTimeout = 65000;
 
+// 🔄 ОБНОВЛЕННАЯ ОБРАБОТКА SIGTERM
 process.on('SIGTERM', () => {
   console.log('🔄 Получен SIGTERM, плавное завершение работы');
   console.log('📊 Финальная статистика кэша:', quickCache.getStats());
+
+  // Останавливаем авто-пинг
+  const keepAliveInterval = require('timers')._getFirstTimer();
+  if (keepAliveInterval) {
+    clearInterval(keepAliveInterval);
+    console.log('🔄 Авто-пинг система остановлена');
+  }
 
   server.close(() => {
     console.log('✅ HTTP сервер закрыт');
@@ -1635,6 +1722,7 @@ process.on('SIGTERM', () => {
     process.exit(1);
   }, 10000);
 });
+
 
 process.on('warning', (warning) => {
   if (warning.name === 'MaxListenersExceededWarning' ||
