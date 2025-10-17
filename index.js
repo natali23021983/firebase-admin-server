@@ -1,4 +1,25 @@
+// ==================== НОВОЕ: Оптимизации пула потоков и памяти ====================
 require('dotenv').config();
+
+// Увеличиваем лимиты Node.js для высоких нагрузок
+const os = require('os');
+const THREAD_POOL_SIZE = process.env.UV_THREADPOOL_SIZE || 128;
+process.env.UV_THREADPOOL_SIZE = THREAD_POOL_SIZE;
+
+console.log(`🚀 Оптимизация запущена:`);
+console.log(`   CPU cores: ${os.cpus().length}`);
+console.log(`   Thread pool: ${THREAD_POOL_SIZE}`);
+console.log(`   Memory: ${Math.round(os.totalmem() / 1024 / 1024 / 1024)}GB`);
+
+// ==================== НОВОЕ: Оптимизация пула соединений ====================
+const https = require('https');
+const http = require('http');
+
+// Увеличиваем максимальное количество сокетов
+https.globalAgent.maxSockets = Infinity;
+http.globalAgent.maxSockets = Infinity;
+https.globalAgent.maxFreeSockets = 256;
+http.globalAgent.maxFreeSockets = 256;
 
 process.on('uncaughtException', (error) => {
   console.error('🔥 НЕОБРАБОТАННОЕ ИСКЛЮЧЕНИЕ:', error.message);
@@ -8,26 +29,30 @@ process.on('unhandledRejection', (reason, promise) => {
   console.error('🔥 НЕОБРАБОТАННЫЙ ПРОМИС:', reason);
 });
 
-// ==================== ОПТИМИЗАЦИЯ №1: LRU КЭШ ВМЕСТО SIMPLE MAP ====================
-class LRUCache {
-  constructor(maxSize = 1000, maxMemoryMB = 500) {
+// ==================== ОПТИМИЗАЦИЯ №1: УЛУЧШЕННЫЙ LRU КЭШ ====================
+class OptimizedLRUCache {
+  constructor(maxSize = 2000, maxMemoryMB = 800) { // УВЕЛИЧЕНО: было 1000, 500
     this.maxSize = maxSize;
     this.maxMemoryBytes = maxMemoryMB * 1024 * 1024;
     this.cache = new Map();
-    this.hits = 0;
-    this.misses = 0;
+    this.stats = {
+      hits: 0,
+      misses: 0,
+      evictions: 0
+    };
+    this.cleanupInterval = setInterval(() => this.cleanup(), 60000); // Автоочистка каждую минуту
   }
 
   get(key) {
     if (!this.cache.has(key)) {
-      this.misses++;
+      this.stats.misses++;
       return null;
     }
 
     const value = this.cache.get(key);
     this.cache.delete(key);
     this.cache.set(key, value);
-    this.hits++;
+    this.stats.hits++;
 
     return value.data;
   }
@@ -44,31 +69,41 @@ class LRUCache {
     } else if (this.cache.size >= this.maxSize) {
       const firstKey = this.cache.keys().next().value;
       this.cache.delete(firstKey);
+      this.stats.evictions++;
     }
 
     this.cache.set(key, item);
 
-    if (this.cache.size % 10 === 0) {
+    // Более агрессивная очистка
+    if (this.cache.size % 5 === 0) { // ИЗМЕНЕНО: было 10
       this.cleanup();
     }
   }
 
   cleanup() {
     const now = Date.now();
+    let cleaned = 0;
+    
     for (let [key, value] of this.cache.entries()) {
       if (now - value.timestamp > value.ttl) {
         this.cache.delete(key);
+        cleaned++;
       }
+    }
+    
+    if (cleaned > 0) {
+      console.log(`🧹 Автоочистка кэша: удалено ${cleaned} устаревших записей`);
     }
   }
 
   getStats() {
-    const total = this.hits + this.misses;
+    const total = this.stats.hits + this.stats.misses;
     return {
       size: this.cache.size,
-      hits: this.hits,
-      misses: this.misses,
-      hitRate: total > 0 ? ((this.hits / total) * 100).toFixed(2) + '%' : '0%',
+      hits: this.stats.hits,
+      misses: this.stats.misses,
+      evictions: this.stats.evictions,
+      hitRate: total > 0 ? ((this.stats.hits / total) * 100).toFixed(2) + '%' : '0%',
       memoryUsage: this.getMemoryUsage() + 'MB'
     };
   }
@@ -85,14 +120,34 @@ class LRUCache {
     }
     return Math.round(size / 1024 / 1024);
   }
+
+  // НОВЫЙ МЕТОД: Принудительная очистка для аварийного режима
+  emergencyCleanup() {
+    const currentSize = this.cache.size;
+    const targetSize = Math.floor(this.maxSize * 0.3);
+    
+    if (currentSize <= targetSize) return 0;
+    
+    let deleted = 0;
+    const keysToDelete = [];
+    
+    for (let [key] of this.cache.entries()) {
+      if (deleted >= currentSize - targetSize) break;
+      keysToDelete.push(key);
+      deleted++;
+    }
+    
+    keysToDelete.forEach(key => this.cache.delete(key));
+    return deleted;
+  }
 }
 
 // ==================== ИНИЦИАЛИЗАЦИЯ ОПТИМИЗИРОВАННОГО КЭША ====================
-const quickCache = new LRUCache(1000, 500);
+const quickCache = new OptimizedLRUCache(2000, 800); // УВЕЛИЧЕНО: было 1000, 500
 
 // ==================== ОПТИМИЗАЦИЯ №2: УВЕЛИЧЕННЫЕ ТАЙМАУТЫ И RETRY ЛОГИКА ====================
-const FIREBASE_TIMEOUT = 15000;
-const S3_TIMEOUT = 30000;
+const FIREBASE_TIMEOUT = 20000; // УВЕЛИЧЕНО: было 15000
+const S3_TIMEOUT = 45000; // УВЕЛИЧЕНО: было 30000
 const RETRY_ATTEMPTS = 3;
 const RETRY_BASE_DELAY = 1000;
 
@@ -124,16 +179,17 @@ const withStrictTimeout = (promise, timeoutMs, operationName = 'Operation') => {
 };
 
 // ==================== ОПТИМИЗАЦИЯ №3: УВЕЛИЧЕННЫЕ ЛИМИТЫ ПАМЯТИ ====================
-const MEMORY_LIMIT = 500 * 1024 * 1024;
+const MEMORY_LIMIT = 800 * 1024 * 1024; // УВЕЛИЧЕНО: было 500MB
 let emergencyMode = false;
 
+// НОВАЯ ФУНКЦИЯ: Мониторинг памяти с оптимизацией
 setInterval(() => {
   const memory = process.memoryUsage();
   const heapUsedMB = Math.round(memory.heapUsed / 1024 / 1024);
   const memoryLimitMB = MEMORY_LIMIT / 1024 / 1024;
 
-  if (heapUsedMB > memoryLimitMB * 0.9) {
-    console.warn('🚨 КРИТИЧЕСКАЯ ПАМЯТЬ:', {
+  if (heapUsedMB > memoryLimitMB * 0.8) { // ИЗМЕНЕНО: было 0.9
+    console.warn('🚨 ВЫСОКАЯ ЗАГРУЗКА ПАМЯТИ:', {
       используется: heapUsedMB + 'MB',
       всего: Math.round(memory.heapTotal / 1024 / 1024) + 'MB',
       лимит: memoryLimitMB + 'MB'
@@ -142,8 +198,9 @@ setInterval(() => {
     const now = Date.now();
     let cleanedCount = 0;
 
+    // Более агрессивная очистка старых записей
     for (let [key, value] of quickCache.cache.entries()) {
-      if (now - value.timestamp > 60000) {
+      if (now - value.timestamp > 30000) { // ИЗМЕНЕНО: было 60000
         quickCache.cache.delete(key);
         cleanedCount++;
       }
@@ -153,13 +210,15 @@ setInterval(() => {
 
     if (global.gc) {
       global.gc();
+      console.log('🔄 Сборка мусора выполнена');
     }
   }
 
+  // Логирование статистики каждые 5 минут
   if (process.env.NODE_ENV === 'development' && Date.now() % 300000 < 1000) {
     console.log('📊 Статистика кэша:', quickCache.getStats());
   }
-}, 30000);
+}, 15000); // ИЗМЕНЕНО: было 30000
 
 const express = require('express');
 const cors = require("cors");
@@ -169,12 +228,43 @@ const { v4: uuidv4 } = require('uuid');
 const { S3Client, PutObjectCommand, DeleteObjectCommand, DeleteObjectsCommand } = require("@aws-sdk/client-s3");
 const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 
+// ==================== НОВОЕ: Оптимизация AWS SDK ====================
+const { NodeHttpHandler } = require("@aws-sdk/node-http-handler");
+
 const app = express();
+
+// ==================== НОВОЕ: Лимитер запросов ====================
+const rateLimit = require('express-rate-limit');
+
+const heavyLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000, // 1 минута
+  max: 100, // максимум 100 запросов в минуту
+  message: {
+    error: "Слишком много запросов, попробуйте позже",
+    retryAfter: 60
+  },
+  standardHeaders: true,
+  legacyHeaders: false
+});
+
+const apiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 минут
+  max: 1000, // максимум 1000 запросов
+  standardHeaders: true,
+  legacyHeaders: false
+});
+
 app.use(cors());
 app.use(express.json());
 
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// Применяем лимитеры
+app.use("/send-event-notification", heavyLimiter);
+app.use("/generate-upload-url", heavyLimiter);
+app.use("/news", apiLimiter);
+app.use("/send-message", apiLimiter);
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -217,11 +307,21 @@ try {
   if (!base64) throw new Error("FIREBASE_CONFIG переменная не найдена в .env");
   const serviceAccount = JSON.parse(Buffer.from(base64, 'base64').toString('utf8'));
 
-  admin.initializeApp({
+  // ==================== НОВОЕ: Оптимизированная конфигурация Firebase ====================
+  const firebaseConfig = {
     credential: admin.credential.cert(serviceAccount),
-    databaseURL: process.env.FIREBASE_DB_URL
-  });
-  console.log("✅ Firebase инициализирован");
+    databaseURL: process.env.FIREBASE_DB_URL,
+    httpAgent: new https.Agent({
+      keepAlive: true,
+      maxSockets: 100,
+      maxFreeSockets: 20,
+      timeout: 30000,
+      freeSocketTimeout: 30000
+    })
+  };
+
+  admin.initializeApp(firebaseConfig);
+  console.log("✅ Firebase инициализирован с оптимизированными настройками");
 } catch (err) {
   console.error("🔥 Ошибка инициализации Firebase:", err);
 }
@@ -237,7 +337,16 @@ const s3 = new S3Client({
     accessKeyId: process.env.YC_ACCESS_KEY,
     secretAccessKey: process.env.YC_SECRET_KEY,
   },
+  // ==================== НОВОЕ: Оптимизированный обработчик запросов ====================
+  requestHandler: new NodeHttpHandler({
+    connectionTimeout: 45000,
+    socketTimeout: 45000,
+    requestTimeout: 45000,
+    maxSockets: 256,
+    maxFreeSockets: 64
+  })
 });
+
 const BUCKET_NAME = process.env.YC_S3_BUCKET;
 
 // === Middleware проверки Firebase-токена ===
@@ -319,12 +428,12 @@ async function getGroupWithCache(groupId) {
     const groupSnap = await withRetry(
       () => db.ref(`groups/${groupId}`).once('value'),
       `Получение группы ${groupId} из Firebase`,
-      FIREBASE_TIMEOUT
+      10000 // УМЕНЬШЕНО: было FIREBASE_TIMEOUT
     );
     const groupData = groupSnap.val();
 
     if (groupData) {
-      quickCache.set(cacheKey, groupData, 300000);
+      quickCache.set(cacheKey, groupData, 600000); // УВЕЛИЧЕНО: было 300000 (10 минут)
     }
 
     return groupData;
@@ -334,25 +443,37 @@ async function getGroupWithCache(groupId) {
   }
 }
 
-// ==================== ОПТИМИЗАЦИЯ №5: УЛУЧШЕННЫЙ ПОИСК РОДИТЕЛЕЙ ====================
-async function findParentsByGroupIdOptimized(groupId) {
+// ==================== НОВОЕ: Предварительная загрузка данных родителей ====================
+async function preloadParentsData(groupId) {
+  const cacheKey = `parents_${groupId}`;
+  const cached = quickCache.get(cacheKey);
+  
+  if (cached) {
+    return cached;
+  }
+
   try {
-    const groupData = await getGroupWithCache(groupId);
+    const [groupData, allParents] = await Promise.all([
+      getGroupWithCache(groupId),
+      withRetry(() => 
+        db.ref('users')
+          .orderByChild('role')
+          .equalTo('Родитель')
+          .once('value'),
+        'Загрузка всех родителей',
+        15000
+      )
+    ]);
+
     const childrenInGroup = groupData?.children || {};
     const childIds = Object.keys(childrenInGroup);
 
-    if (childIds.length === 0) return [];
+    if (childIds.length === 0) {
+      quickCache.set(cacheKey, [], 300000); // Кэшируем пустой результат
+      return [];
+    }
 
-    const parentsSnap = await withRetry(
-      () => db.ref('users')
-        .orderByChild('role')
-        .equalTo('Родитель')
-        .once('value'),
-      'Оптимизированный поиск родителей',
-      FIREBASE_TIMEOUT
-    );
-
-    const users = parentsSnap.val() || {};
+    const users = allParents.val() || {};
     const parents = [];
     const foundParentIds = new Set();
 
@@ -385,16 +506,23 @@ async function findParentsByGroupIdOptimized(groupId) {
       }
     }
 
+    // Кэшируем результат на 5 минут
+    quickCache.set(cacheKey, parents, 300000);
     return parents;
 
   } catch (error) {
-    console.error("❌ Ошибка оптимизированного поиска родителей:", error);
+    console.error("❌ Ошибка предзагрузки родителей:", error);
     return [];
   }
 }
 
+// ==================== ОПТИМИЗАЦИЯ №5: УЛУЧШЕННЫЙ ПОИСК РОДИТЕЛЕЙ ====================
+async function findParentsByGroupIdOptimized(groupId) {
+  return await preloadParentsData(groupId);
+}
+
 // ==================== ОПТИМИЗАЦИЯ №6: ПАРАЛЛЕЛЬНАЯ ОТПРАВКА УВЕДОМЛЕНИЙ ====================
-async function sendNotificationsParallel(recipients, createMessagePayload, batchSize = 10) {
+async function sendNotificationsParallel(recipients, createMessagePayload, batchSize = 15) { // УВЕЛИЧЕНО: было 10
   const results = {
     successful: 0,
     failed: 0,
@@ -433,8 +561,9 @@ async function sendNotificationsParallel(recipients, createMessagePayload, batch
       }
     });
 
+    // Уменьшаем задержку между батчами
     if (i + batchSize < recipients.length) {
-      await new Promise(resolve => setTimeout(resolve, 100));
+      await new Promise(resolve => setTimeout(resolve, 50)); // УМЕНЬШЕНО: было 100
     }
   }
 
@@ -486,7 +615,7 @@ async function sendEventNotificationsOptimized({
       }
     });
 
-    return await sendNotificationsParallel(parentsWithTokens, createMessagePayload, 15);
+    return await sendNotificationsParallel(parentsWithTokens, createMessagePayload, 20); // УВЕЛИЧЕНО: было 15
 
   } catch (err) {
     console.error("❌ Ошибка в sendEventNotificationsOptimized:", err);
@@ -506,7 +635,8 @@ const performanceMetrics = {
 
 // 🔥 Middleware логирования
 app.use((req, res, next) => {
-  if (req.url === '/health' || req.url === '/ping' || req.url === '/metrics') {
+  if (req.url === '/health' || req.url === '/ping' || req.url === '/metrics' || 
+      req.url === '/light-ping' || req.url === '/load-metrics') { // ДОБАВЛЕНО
     return next();
   }
 
@@ -520,14 +650,14 @@ app.use((req, res, next) => {
 
   res.on('finish', () => {
     const duration = Date.now() - start;
-    const isSlow = duration > 5000;
+    const isSlow = duration > 3000; // ИЗМЕНЕНО: было 5000
 
     if (isSlow) {
       performanceMetrics.slowRequests++;
       console.warn(`🐌 [${requestId}] МЕДЛЕННО: ${req.method} ${req.url} - ${duration}мс`);
     }
 
-    if (process.env.NODE_ENV === 'development') {
+    if (process.env.NODE_ENV === 'development' || duration > 1000) {
       console.log(`✅ [${requestId}] ${req.method} ${req.url} - ${duration}мс`);
     }
   });
@@ -544,7 +674,7 @@ app.post('/deleteUserByName', async (req, res) => {
     const usersSnap = await withRetry(
       () => db.ref('users').once('value'),
       'Удаление пользователя по имени',
-      20000
+      15000 // УМЕНЬШЕНО: было 20000
     );
     const users = usersSnap.val() || {};
     let found = false;
@@ -589,7 +719,7 @@ app.post('/deleteUserByName', async (req, res) => {
         const groupsSnap = await withRetry(
           () => db.ref('groups').once('value'),
           'Получение групп для удаления педагога',
-          10000
+          8000 // УМЕНЬШЕНО: было 10000
         );
         const groups = groupsSnap.val() || {};
 
@@ -662,7 +792,7 @@ app.post('/deleteChild', async (req, res) => {
     const childSnap = await withRetry(
       () => childRef.once('value'),
       'Получение данных ребенка для удаления',
-      10000
+      8000 // УМЕНЬШЕНО: было 10000
     );
 
     if (!childSnap.exists()) {
@@ -679,7 +809,7 @@ app.post('/deleteChild', async (req, res) => {
       const groupsSnap = await withRetry(
         () => groupsRef.once('value'),
         'Поиск группы ребенка',
-        10000
+        8000 // УМЕНЬШЕНО: было 10000
       );
       const groups = groupsSnap.val() || {};
 
@@ -700,7 +830,7 @@ app.post('/deleteChild', async (req, res) => {
       const groupChildrenSnap = await withRetry(
         () => groupChildrenRef.once('value'),
         'Получение детей группы',
-        5000
+        4000 // УМЕНЬШЕНО: было 5000
       );
       const groupChildren = groupChildrenSnap.val() || {};
 
@@ -754,7 +884,7 @@ app.post("/update-user", async (req, res) => {
     const snap = await withRetry(
       () => db.ref("users").orderByChild("name").equalTo(fullName).once("value"),
       'Поиск пользователя для обновления email',
-      15000
+      10000 // УМЕНЬШЕНО: было 15000
     );
     if (!snap.exists()) return res.status(404).json({ error: "Пользователь не найден" });
 
@@ -801,7 +931,7 @@ app.post("/news", verifyToken, async (req, res) => {
       const snap = await withRetry(
         () => ref.once("value"),
         'Редактирование новости',
-        10000
+        8000 // УМЕНЬШЕНО: было 10000
       );
       const oldNews = snap.val();
       if (!oldNews) return res.status(404).json({ error: "Новость не найдена" });
@@ -860,7 +990,7 @@ app.get("/news", verifyToken, async (req, res) => {
     const snap = await withRetry(
       () => db.ref(`news/${groupId}`).once("value"),
       'Получение списка новостей',
-      10000
+      8000 // УМЕНЬШЕНО: было 10000
     );
     const newsData = snap.val() || {};
 
@@ -900,7 +1030,7 @@ app.post("/deleteNews", verifyToken, async (req, res) => {
     const snap = await withRetry(
       () => db.ref(`news/${groupId}/${newsId}`).once('value'),
       'Удаление новости',
-      5000
+      4000 // УМЕНЬШЕНО: было 5000
     );
     const data = snap.val();
     if (!data) return res.status(404).json({ error: "Новость не найдена" });
@@ -963,7 +1093,7 @@ app.post('/generate-upload-url', verifyToken, async (req, res) => {
       const hasAccess = await withRetry(
         () => checkChatAccess(req.user.uid, finalGroupId, folder === 'private-chats/'),
         'Проверка доступа к чату',
-        5000
+        4000 // УМЕНЬШЕНО: было 5000
       );
       if (!hasAccess) {
         return res.status(403).json({ error: "Нет доступа к этому чату" });
@@ -986,7 +1116,7 @@ app.post('/generate-upload-url', verifyToken, async (req, res) => {
     const uploadUrl = await withRetry(
       () => getSignedUrl(s3, command, { expiresIn: 300 }),
       'Генерация signed URL S3',
-      5000
+      4000 // УМЕНЬШЕНО: было 5000
     );
     const fileUrl = `https://${BUCKET_NAME}.storage.yandexcloud.net/${key}`;
 
@@ -1049,7 +1179,7 @@ async function isPrivateChatId(chatId) {
       const privateSnap = await withRetry(
         () => privateChatRef.once('value'),
         'Проверка приватного чата',
-        5000
+        4000 // УМЕНЬШЕНО: было 5000
       );
 
       if (privateSnap.exists()) {
@@ -1060,7 +1190,7 @@ async function isPrivateChatId(chatId) {
       const groupSnap = await withRetry(
         () => groupChatRef.once('value'),
         'Проверка группового чата',
-        5000
+        4000 // УМЕНЬШЕНО: было 5000
       );
 
       if (groupSnap.exists()) {
@@ -1074,7 +1204,7 @@ async function isPrivateChatId(chatId) {
     const groupSnap = await withRetry(
       () => groupChatRef.once('value'),
       'Проверка существования группового чата',
-      5000
+      4000 // УМЕНЬШЕНО: было 5000
     );
 
     return !groupSnap.exists();
@@ -1089,7 +1219,7 @@ async function removeInvalidToken(invalidToken) {
     const usersSnap = await withRetry(
       () => db.ref('users').once('value'),
       'Поиск пользователей для удаления токена',
-      10000
+      8000 // УМЕНЬШЕНО: было 10000
     );
     const users = usersSnap.val() || {};
 
@@ -1121,7 +1251,7 @@ app.post("/send-message", verifyToken, async (req, res) => {
     const senderSnap = await withRetry(
       () => db.ref(`users/${senderId}`).once('value'),
       'Получение данных отправителя',
-      5000
+      4000 // УМЕНЬШЕНО: было 5000
     );
     const sender = senderSnap.val();
     const senderName = sender?.name || "Неизвестный";
@@ -1141,7 +1271,7 @@ app.post("/send-message", verifyToken, async (req, res) => {
     const isPrivateChat = await withRetry(
       () => isPrivateChatId(chatId),
       'Определение типа чата',
-      5000
+      4000 // УМЕНЬШЕНО: было 5000
     );
 
     let chatRef;
@@ -1228,7 +1358,7 @@ async function sendChatNotification({
         const userSnap = await withRetry(
           () => db.ref(`users/${otherUserId}`).once('value'),
           'Получение пользователя приватного чата',
-          5000
+          4000 // УМЕНЬШЕНО: было 5000
         );
         const user = userSnap.val();
         if (user && user.fcmToken) {
@@ -1250,7 +1380,7 @@ async function sendChatNotification({
               const teacherSnap = await withRetry(
                 () => db.ref(`users/${teacherId}`).once('value'),
                 `Получение педагога ${teacherId}`,
-                3000
+                2000 // УМЕНЬШЕНО: было 3000
               );
               const teacher = teacherSnap.val();
               if (teacher && teacher.fcmToken) {
@@ -1327,13 +1457,13 @@ app.post("/send-event-notification", verifyToken, async (req, res) => {
     const actualGroupName = await withRetry(
       () => getGroupName(groupId),
       'Получение названия группы',
-      10000
+      8000 // УМЕНЬШЕНО: было 10000
     );
 
     const parents = await withRetry(
       () => findParentsByGroupIdOptimized(groupId),
       'Оптимизированный поиск родителей',
-      30000
+      20000 // УМЕНЬШЕНО: было 30000
     );
 
     if (parents.length === 0) {
@@ -1402,45 +1532,59 @@ function formatEventNotification(title, time, place, groupName) {
   return notification;
 }
 
+// ==================== НОВОЕ: Упрощенные health checks для нагрузочного тестирования ====================
 
-// ==================== HEALTH CHECKS И МОНИТОРИНГ ====================
-
-// 🔄 ОБНОВЛЕННЫЙ health endpoint с авто-пингом
+// 🔄 Упрощенный health endpoint
 app.get("/health", (req, res) => {
-  const memory = process.memoryUsage();
-  const cacheStats = quickCache.getStats();
-
-  // Логируем факт health check (помогает в диагностике)
-  if (req.headers['user-agent'] && !req.headers['user-agent'].includes('Render')) {
-    console.log(`🔍 External health check from: ${req.ip}`);
-  }
-
+  // Минимальная проверка - быстро отвечаем
   res.json({
     status: "OK",
     timestamp: Date.now(),
+    uptime: Math.round(process.uptime())
+  });
+});
+
+// 🚀 Lightweight ping endpoint
+app.get("/light-ping", (req, res) => {
+  res.json({ 
+    pong: Date.now(),
+    status: "alive",
+    version: "2.0.0-optimized"
+  });
+});
+
+// 📊 Новый endpoint для мониторинга нагрузки
+app.get("/load-metrics", (req, res) => {
+  const load = os.loadavg();
+  const memory = process.memoryUsage();
+  const uptime = Date.now() - performanceMetrics.startTime;
+  const requestsPerMinute = (performanceMetrics.requests / (uptime / 60000)).toFixed(2);
+  
+  res.json({
+    loadAverage: load,
     memory: {
-      rss: Math.round(memory.rss / 1024 / 1024) + "MB",
-      heap: Math.round(memory.heapUsed / 1024 / 1024) + "MB",
-      limit: Math.round(MEMORY_LIMIT / 1024 / 1024) + "MB"
+      used: Math.round(memory.heapUsed / 1024 / 1024) + 'MB',
+      total: Math.round(memory.heapTotal / 1024 / 1024) + 'MB',
+      rss: Math.round(memory.rss / 1024 / 1024) + 'MB'
     },
-    uptime: Math.round(process.uptime()) + "s",
-    cache: cacheStats,
     performance: {
-      requests: performanceMetrics.requests,
-      errorRate: ((performanceMetrics.errors / Math.max(performanceMetrics.requests, 1)) * 100).toFixed(2) + '%'
+      activeRequests: performanceMetrics.requests,
+      requestsPerMinute: requestsPerMinute,
+      errorRate: ((performanceMetrics.errors / Math.max(performanceMetrics.requests, 1)) * 100).toFixed(2) + '%',
+      slowRequests: performanceMetrics.slowRequests
     },
-    keep_alive: {
-      enabled: true,
-      last_ping: new Date().toISOString(),
-      next_ping: new Date(Date.now() + KEEP_ALIVE_INTERVAL).toISOString()
+    cache: quickCache.getStats(),
+    system: {
+      cpuCores: os.cpus().length,
+      threadPool: THREAD_POOL_SIZE,
+      uptime: Math.round(process.uptime()) + 's'
     }
   });
 });
 
-// ==================== ДОБАВЬТЕ ЭТИ ENDPOINTS ДЛЯ ВНЕШНИХ СЕРВИСОВ ====================
+// ==================== ОСТАВШИЕСЯ HEALTH CHECKS И МОНИТОРИНГ ====================
 
 app.get("/keep-alive", (req, res) => {
-  // Принудительно логируем каждый внешний ping
   console.log(`🌐 External keep-alive ping from: ${req.ip || 'unknown'}`);
 
   res.json({
@@ -1456,10 +1600,9 @@ app.get("/wake-up", async (req, res) => {
   console.log('🔔 Сервер пробужден внешним запросом');
 
   try {
-    // Проверяем все зависимости
     const firebaseAlive = await withStrictTimeout(
       db.ref('.info/connected').once('value'),
-      5000,
+      3000, // УМЕНЬШЕНО: было 5000
       'Wake-up Firebase check'
     );
 
@@ -1515,7 +1658,7 @@ app.get("/deep-health", async (req, res) => {
   try {
     const fbCheck = await withStrictTimeout(
       db.ref('.info/connected').once('value'),
-      5000,
+      3000, // УМЕНЬШЕНО: было 5000
       'Глубокий health check Firebase'
     );
     checks.firebase = true;
@@ -1527,7 +1670,7 @@ app.get("/deep-health", async (req, res) => {
         Body: Buffer.from('health'),
         ContentType: 'text/plain'
       })),
-      10000,
+      5000, // УМЕНЬШЕНО: было 10000
       'Глубокий health check S3'
     );
     checks.s3 = true;
@@ -1561,11 +1704,15 @@ app.get("/info", (req, res) => {
       retry_logic: "implemented",
       parallel_notifications: "implemented",
       increased_timeouts: "implemented",
-      memory_optimized: "implemented"
+      memory_optimized: "implemented",
+      connection_pool: "optimized",
+      rate_limiting: "implemented"
     },
     endpoints: {
+      "GET /light-ping": "Быстрый пинг для нагрузочного тестирования",
+      "GET /load-metrics": "Метрики нагрузки в реальном времени",
       "POST /send-event-notification": "Отправка уведомлений о новых событиях",
-      "GET /health": "Проверка работоспособности сервера",
+      "GET /health": "Упрощенная проверка работоспособности",
       "GET /deep-health": "Глубокий health check с проверкой зависимостей",
       "GET /info": "Информация о сервере",
       "GET /ping": "Пинг с диагностикой",
@@ -1583,7 +1730,7 @@ app.get("/ping", async (req, res) => {
     const fbStart = Date.now();
     await withStrictTimeout(
       db.ref('.info/connected').once('value'),
-      3000,
+      2000, // УМЕНЬШЕНО: было 3000
       'Пинг Firebase'
     );
     diagnostics.firebase = `${Date.now() - fbStart}ms`;
@@ -1612,7 +1759,7 @@ app.get("/stress-test", async (req, res) => {
   try {
     await withStrictTimeout(
       db.ref('.info/connected').once('value'),
-      3000,
+      2000, // УМЕНЬШЕНО: было 3000
       'Стресс-тест Firebase'
     );
     tests.push({ name: "firebase_connect", time: `${Date.now() - fbStart}ms` });
@@ -1644,35 +1791,17 @@ app.get("/stress-test", async (req, res) => {
   });
 });
 
-// ==================== ENDPOINT ДЛЯ ВНЕШНИХ МОНИТОРИНГОВ ====================
-app.get("/keep-alive", (req, res) => {
-  console.log(`🌐 External keep-alive ping from: ${req.ip || 'unknown'}`);
-
-  res.json({
-    status: "alive",
-    server_time: new Date().toISOString(),
-    uptime: Math.round(process.uptime()) + "s"
-  });
-});
-
-app.get("/wake-up", async (req, res) => {
-  console.log('🔔 Сервер пробужден внешним запросом');
-
-  res.json({
-    status: "awake",
-    timestamp: new Date().toISOString(),
-    message: "Сервер активен и готов к работе"
-  });
-});
-
 app.get("/", (req, res) => {
   res.json({
-    message: "Firebase Admin Server работает (ОПТИМИЗИРОВАННАЯ ВЕРСИЯ)",
+    message: "Firebase Admin Server работает (ОПТИМИЗИРОВАННАЯ ВЕРСИЯ 2.0)",
     timestamp: Date.now(),
     endpoints: [
-      "/health - Проверка здоровья",
-      "/keep-alive - Для авто-пинга",
-      "/wake-up - Принудительное пробуждение",
+      "/light-ping - Быстрый пинг для тестирования",
+      "/load-metrics - Метрики нагрузки",
+      "/health - Упрощенная проверка здоровья",
+      "/info - Информация о сервере",
+      "/ping - Пинг с диагностикой",
+      "/stress-test - Тест нагрузки",
       "/metrics - Метрики производительности"
     ]
   });
@@ -1680,14 +1809,15 @@ app.get("/", (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 
-// ==================== АВТО-ПИНГ ДЛЯ RENDER ====================
+// ==================== ОПТИМИЗАЦИЯ №7: АВТО-ПИНГ ДЛЯ RENDER ====================
 const KEEP_ALIVE_INTERVAL = 14 * 60 * 1000; // 14 минут
 
 function keepAlivePing() {
-  const pingUrl = `http://localhost:${PORT}/health`;
+  const pingUrl = `http://localhost:${PORT}/light-ping`; // ИЗМЕНЕНО: используем light-ping
 
   require('http').get(pingUrl, (res) => {
-    console.log(`🏓 Auto-ping: ✅ ${new Date().toISOString()}`);
+    const success = res.statusCode === 200;
+    console.log(`🏓 Auto-ping: ${success ? '✅' : '❌'} ${new Date().toISOString()}`);
   }).on('error', (err) => {
     console.log(`🏓 Auto-ping failed: ${err.message}`);
   });
@@ -1699,9 +1829,11 @@ const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`✅ Лимит кэша: ${quickCache.maxSize} записей (УВЕЛИЧЕНО)`);
   console.log(`✅ Таймаут Firebase: ${FIREBASE_TIMEOUT}мс (УВЕЛИЧЕНО)`);
   console.log(`✅ Таймаут S3: ${S3_TIMEOUT}мс (УВЕЛИЧЕНО)`);
-  console.log(`✅ Попытки повтора: ${RETRY_ATTEMPTS} (НОВОЕ)`);
-  console.log(`✅ Параллельные уведомления: включено (НОВОЕ)`);
-  console.log(`✅ Авто-пинг: каждые ${KEEP_ALIVE_INTERVAL / 60000} минут (ДЛЯ RENDER)`);
+  console.log(`✅ Попытки повтора: ${RETRY_ATTEMPTS}`);
+  console.log(`✅ Параллельные уведомления: включено`);
+  console.log(`✅ Размер пула потоков: ${THREAD_POOL_SIZE} (НОВОЕ)`);
+  console.log(`✅ Лимитер запросов: включен (НОВОЕ)`);
+  console.log(`✅ Авто-пинг: каждые ${KEEP_ALIVE_INTERVAL / 60000} минут`);
 
   // 🔄 АВТО-ПИНГ СИСТЕМА ДЛЯ RENDER
   const keepAliveInterval = setInterval(keepAlivePing, KEEP_ALIVE_INTERVAL);
@@ -1719,9 +1851,17 @@ const server = app.listen(PORT, '0.0.0.0', () => {
 server.keepAliveTimeout = 60000;
 server.headersTimeout = 65000;
 
+// 🔄 ОБНОВЛЕННАЯ ОБРАБОТКА SIGTERM
 process.on('SIGTERM', () => {
   console.log('🔄 Получен SIGTERM, плавное завершение работы');
   console.log('📊 Финальная статистика кэша:', quickCache.getStats());
+
+  // Останавливаем авто-пинг
+  const keepAliveInterval = require('timers')._getFirstTimer();
+  if (keepAliveInterval) {
+    clearInterval(keepAliveInterval);
+    console.log('🔄 Авто-пинг система остановлена');
+  }
 
   server.close(() => {
     console.log('✅ HTTP сервер закрыт');
@@ -1742,16 +1882,7 @@ process.on('warning', (warning) => {
     if (!emergencyMode) {
       emergencyMode = true;
 
-      const currentSize = quickCache.cache.size;
-      const targetSize = Math.floor(quickCache.maxSize * 0.3);
-
-      let deleted = 0;
-      for (let [key] of quickCache.cache.entries()) {
-        if (deleted >= currentSize - targetSize) break;
-        quickCache.cache.delete(key);
-        deleted++;
-      }
-
+      const deleted = quickCache.emergencyCleanup();
       console.log(`🚨 Аварийная очистка кэша: удалено ${deleted} записей`);
 
       if (global.gc) {
@@ -1768,11 +1899,10 @@ process.on('warning', (warning) => {
 });
 
 console.log('🚀 Оптимизация сервера завершена:');
-console.log('   • LRU Кэш реализован');
-console.log('   • Логика повтора с exponential backoff');
-console.log('   • Параллельная отправка уведомлений');
-console.log('   • Увеличенные таймауты и лимиты памяти');
-console.log('   • Оптимизированный алгоритм поиска родителей');
-console.log('   • Авто-пинг система для Render');
-
-
+console.log('   • LRU Кэш улучшен и увеличен');
+console.log('   • Пул потоков увеличен до 128');
+console.log('   • Пул соединений оптимизирован');
+console.log('   • Лимитер запросов реализован');
+console.log('   • Таймауты уменьшены для лучшей отзывчивости');
+console.log('   • Предварительная загрузка данных родителей');
+console.log('   • Упрощенные health checks для нагрузочного тестирования');
