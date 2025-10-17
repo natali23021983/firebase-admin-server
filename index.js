@@ -1,5 +1,15 @@
 require('dotenv').config();
 
+// 🔥 ИЗМЕНЕНИЕ: Добавлен apicache для кэширования
+const apicache = require('apicache');
+const cache = apicache.middleware;
+
+// 🔥 ИЗМЕНЕНИЕ: Добавлен rate-limiting
+const rateLimit = require('express-rate-limit');
+
+// 🔥 ИЗМЕНЕНИЕ: Добавлено сжатие ответов
+const compression = require('compression');
+
 process.on('uncaughtException', (error) => {
   console.error('🔥 НЕОБРАБОТАННОЕ ИСКЛЮЧЕНИЕ:', error.message);
 });
@@ -96,6 +106,16 @@ const S3_TIMEOUT = 30000;
 const RETRY_ATTEMPTS = 3;
 const RETRY_BASE_DELAY = 1000;
 
+// 🔥 ИЗМЕНЕНИЕ: Добавлен оптимизированный пул соединений
+const https = require('https');
+const agent = new https.Agent({
+  keepAlive: true,
+  maxSockets: 50,
+  maxFreeSockets: 20,
+  timeout: 60000,
+  freeSocketTimeout: 30000
+});
+
 // НОВАЯ ФУНКЦИЯ: Retry логика с exponential backoff
 const withRetry = async (operation, operationName = 'Operation', timeoutMs = FIREBASE_TIMEOUT, maxRetries = RETRY_ATTEMPTS) => {
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
@@ -170,11 +190,45 @@ const { S3Client, PutObjectCommand, DeleteObjectCommand, DeleteObjectsCommand } 
 const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 
 const app = express();
+
+// 🔥 ИЗМЕНЕНИЕ: Добавлено сжатие ответов
+app.use(compression({
+  level: 6,
+  threshold: 1024,
+  filter: (req, res) => {
+    if (req.headers['x-no-compression']) {
+      return false;
+    }
+    return compression.filter(req, res);
+  }
+}));
+
 app.use(cors());
 app.use(express.json());
 
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// 🔥 ИЗМЕНЕНИЕ: Добавлен rate limiting
+const generalLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000, // 1 минута
+  max: 100, // максимум 100 запросов с одного IP
+  message: {
+    error: "Слишком много запросов, попробуйте позже"
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 минут
+  max: 10, // максимум 10 попыток входа
+  message: {
+    error: "Слишком много попыток аутентификации"
+  }
+});
+
+app.use(generalLimiter);
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -230,6 +284,7 @@ const db = admin.database();
 const auth = admin.auth();
 
 // === Яндекс S3 ===
+// 🔥 ИЗМЕНЕНИЕ: Добавлен оптимизированный requestHandler с пулом соединений
 const s3 = new S3Client({
   region: process.env.YC_S3_REGION || "ru-central1",
   endpoint: process.env.YC_S3_ENDPOINT || "https://storage.yandexcloud.net",
@@ -237,6 +292,9 @@ const s3 = new S3Client({
     accessKeyId: process.env.YC_ACCESS_KEY,
     secretAccessKey: process.env.YC_SECRET_KEY,
   },
+  requestHandler: new (require('@aws-sdk/node-http-handler').NodeHttpHandler)({
+    httpsAgent: agent
+  })
 });
 const BUCKET_NAME = process.env.YC_S3_BUCKET;
 
@@ -394,7 +452,8 @@ async function findParentsByGroupIdOptimized(groupId) {
 }
 
 // ==================== ОПТИМИЗАЦИЯ №6: ПАРАЛЛЕЛЬНАЯ ОТПРАВКА УВЕДОМЛЕНИЙ ====================
-async function sendNotificationsParallel(recipients, createMessagePayload, batchSize = 10) {
+// 🔥 ИЗМЕНЕНИЕ: Уменьшен batch size с 10 до 5 для лучшей стабильности
+async function sendNotificationsParallel(recipients, createMessagePayload, batchSize = 5) {
   const results = {
     successful: 0,
     failed: 0,
@@ -494,7 +553,7 @@ async function sendEventNotificationsOptimized({
   }
 }
 
-// 🔥 Метрики производительности
+// 🔥 ИЗМЕНЕНИЕ: Расширенные метрики производительности
 const performanceMetrics = {
   requests: 0,
   errors: 0,
@@ -504,7 +563,17 @@ const performanceMetrics = {
   startTime: Date.now()
 };
 
-// 🔥 Middleware логирования
+// 🔥 ИЗМЕНЕНИЕ: Добавлены расширенные метрики для детального отслеживания
+const advancedMetrics = {
+  endpointTimings: {},
+  databaseQueries: 0,
+  cacheEffectiveness: {
+    hits: 0,
+    misses: 0
+  }
+};
+
+// 🔥 Middleware логирования с расширенными метриками
 app.use((req, res, next) => {
   if (req.url === '/health' || req.url === '/ping' || req.url === '/metrics') {
     return next();
@@ -513,6 +582,7 @@ app.use((req, res, next) => {
   performanceMetrics.requests++;
   const start = Date.now();
   const requestId = Math.random().toString(36).substring(7);
+  const endpoint = req.path;
 
   if (process.env.NODE_ENV === 'development') {
     console.log(`📨 [${requestId}] ${req.method} ${req.url} - Начало`);
@@ -522,9 +592,29 @@ app.use((req, res, next) => {
     const duration = Date.now() - start;
     const isSlow = duration > 5000;
 
+    // 🔥 ИЗМЕНЕНИЕ: Расширенное отслеживание времени выполнения по эндпоинтам
+    if (!advancedMetrics.endpointTimings[endpoint]) {
+      advancedMetrics.endpointTimings[endpoint] = {
+        count: 0,
+        totalTime: 0,
+        average: 0
+      };
+    }
+
+    advancedMetrics.endpointTimings[endpoint].count++;
+    advancedMetrics.endpointTimings[endpoint].totalTime += duration;
+    advancedMetrics.endpointTimings[endpoint].average =
+      advancedMetrics.endpointTimings[endpoint].totalTime /
+      advancedMetrics.endpointTimings[endpoint].count;
+
     if (isSlow) {
       performanceMetrics.slowRequests++;
       console.warn(`🐌 [${requestId}] МЕДЛЕННО: ${req.method} ${req.url} - ${duration}мс`);
+    }
+
+    // 🔥 ИЗМЕНЕНИЕ: Логируем все медленные запросы (>1 секунды)
+    if (duration > 1000) {
+      console.warn(`🐌 Медленный запрос: ${req.method} ${req.path} - ${duration}мс`);
     }
 
     if (process.env.NODE_ENV === 'development') {
@@ -925,7 +1015,8 @@ app.post("/deleteNews", verifyToken, async (req, res) => {
 });
 
 // === Генерация signed URL ===
-app.post('/generate-upload-url', verifyToken, async (req, res) => {
+// 🔥 ИЗМЕНЕНИЕ: Добавлен rate limiting для генерации URL
+app.post('/generate-upload-url', authLimiter, verifyToken, async (req, res) => {
   try {
     const { fileName, fileType, groupId, isPrivateChat, context } = req.body;
 
@@ -1109,7 +1200,8 @@ async function removeInvalidToken(invalidToken) {
 }
 
 // === Отправка сообщений ===
-app.post("/send-message", verifyToken, async (req, res) => {
+// 🔥 ИЗМЕНЕНИЕ: Добавлен rate limiting для отправки сообщений
+app.post("/send-message", authLimiter, verifyToken, async (req, res) => {
   try {
     const { chatId, message, messageType = "text", fileUrl, fileName } = req.body;
     const senderId = req.user.uid;
@@ -1404,7 +1496,8 @@ function formatEventNotification(title, time, place, groupName) {
 
 // ==================== HEALTH CHECKS И МОНИТОРИНГ ====================
 
-app.get("/health", (req, res) => {
+// 🔥 ИЗМЕНЕНИЕ: Добавлено кэширование для health checks
+app.get("/health", cache('30 seconds'), (req, res) => {
   const memory = process.memoryUsage();
   const cacheStats = quickCache.getStats();
 
@@ -1425,7 +1518,8 @@ app.get("/health", (req, res) => {
   });
 });
 
-app.get("/metrics", (req, res) => {
+// 🔥 ИЗМЕНЕНИЕ: Добавлено кэширование для metrics
+app.get("/metrics", cache('10 seconds'), (req, res) => {
   const uptime = Date.now() - performanceMetrics.startTime;
   const requestsPerMinute = (performanceMetrics.requests / (uptime / 60000)).toFixed(2);
   const errorRate = performanceMetrics.requests > 0
@@ -1444,10 +1538,12 @@ app.get("/metrics", (req, res) => {
       external: Math.round(process.memoryUsage().external / 1024 / 1024) + 'MB'
     },
     cache: quickCache.getStats(),
+    advanced_metrics: advancedMetrics.endpointTimings,
     gc: global.gc ? 'available' : 'unavailable'
   });
 });
 
+// 🔥 ИЗМЕНЕНИЕ: Добавлен расширенный health check
 app.get("/deep-health", async (req, res) => {
   const checks = {
     firebase: false,
@@ -1496,6 +1592,75 @@ app.get("/deep-health", async (req, res) => {
   }
 });
 
+// 🔥 ИЗМЕНЕНИЕ: Добавлен advanced health check
+app.get("/advanced-health", async (req, res) => {
+  const health = {
+    status: "healthy",
+    timestamp: Date.now(),
+    checks: {}
+  };
+
+  // Проверка Firebase
+  try {
+    const fbStart = Date.now();
+    await withStrictTimeout(
+      db.ref('.info/connected').once('value'),
+      3000,
+      'Advanced Health Check Firebase'
+    );
+    health.checks.firebase = {
+      status: "healthy",
+      responseTime: Date.now() - fbStart
+    };
+  } catch (error) {
+    health.checks.firebase = {
+      status: "unhealthy",
+      error: error.message
+    };
+    health.status = "degraded";
+  }
+
+  // Проверка S3
+  try {
+    const s3Start = Date.now();
+    await withStrictTimeout(
+      s3.send(new PutObjectCommand({
+        Bucket: BUCKET_NAME,
+        Key: 'health-check-temp',
+        Body: Buffer.from('test'),
+        ContentLength: 4
+      })),
+      5000,
+      'Advanced Health Check S3'
+    );
+    health.checks.s3 = {
+      status: "healthy",
+      responseTime: Date.now() - s3Start
+    };
+  } catch (error) {
+    health.checks.s3 = {
+      status: "unhealthy",
+      error: error.message
+    };
+    health.status = "degraded";
+  }
+
+  // Проверка памяти
+  const memoryUsage = process.memoryUsage();
+  const memoryPercent = (memoryUsage.heapUsed / MEMORY_LIMIT) * 100;
+  health.checks.memory = {
+    status: memoryPercent < 80 ? "healthy" : "warning",
+    usage: Math.round(memoryPercent) + "%",
+    heapUsed: Math.round(memoryUsage.heapUsed / 1024 / 1024) + "MB"
+  };
+
+  if (memoryPercent >= 80) {
+    health.status = "degraded";
+  }
+
+  res.status(health.status === "healthy" ? 200 : 503).json(health);
+});
+
 app.get("/info", (req, res) => {
   res.json({
     service: "Firebase Admin Notification Server",
@@ -1505,12 +1670,16 @@ app.get("/info", (req, res) => {
       retry_logic: "implemented",
       parallel_notifications: "implemented",
       increased_timeouts: "implemented",
-      memory_optimized: "implemented"
+      memory_optimized: "implemented",
+      compression: "implemented",
+      rate_limiting: "implemented",
+      connection_pooling: "implemented"
     },
     endpoints: {
       "POST /send-event-notification": "Отправка уведомлений о новых событиях",
       "GET /health": "Проверка работоспособности сервера",
       "GET /deep-health": "Глубокий health check с проверкой зависимостей",
+      "GET /advanced-health": "Расширенный health check с метриками",
       "GET /info": "Информация о сервере",
       "GET /ping": "Пинг с диагностикой",
       "GET /stress-test": "Тест нагрузки",
@@ -1590,14 +1759,15 @@ app.get("/stress-test", async (req, res) => {
 
 app.get("/", (req, res) => {
   res.json({
-    message: "Firebase Admin Server работает (ОПТИМИЗИРОВАННАЯ ВЕРСИЯ)",
+    message: "Firebase Admin Server работает (ОПТИМИЗИРОВАННАЯ ВЕРСИЯ 2.0)",
     timestamp: Date.now(),
     endpoints: [
       "/health - Проверка здоровья",
       "/info - Информация о сервере",
       "/ping - Пинг с диагностикой",
       "/stress-test - Тест нагрузки",
-      "/metrics - Метрики производительности"
+      "/metrics - Метрики производительности",
+      "/advanced-health - Расширенная проверка"
     ]
   });
 });
@@ -1612,6 +1782,9 @@ const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`✅ Таймаут S3: ${S3_TIMEOUT}мс (УВЕЛИЧЕНО)`);
   console.log(`✅ Попытки повтора: ${RETRY_ATTEMPTS} (НОВОЕ)`);
   console.log(`✅ Параллельные уведомления: включено (НОВОЕ)`);
+  console.log(`✅ Сжатие ответов: включено (НОВОЕ)`);
+  console.log(`✅ Rate limiting: включено (НОВОЕ)`);
+  console.log(`✅ Пул соединений: включено (НОВОЕ)`);
 
   setInterval(() => {
     require('http').get(`http://localhost:${PORT}/health`, () => {}).on('error', () => {});
@@ -1675,3 +1848,8 @@ console.log('   • Логика повтора с exponential backoff');
 console.log('   • Параллельная отправка уведомлений');
 console.log('   • Увеличенные таймауты и лимиты памяти');
 console.log('   • Оптимизированный алгоритм поиска родителей');
+console.log('   • Сжатие ответов включено');
+console.log('   • Rate limiting включен');
+console.log('   • Пул соединений оптимизирован');
+console.log('   • Кэширование health checks');
+console.log('   • Расширенный мониторинг метрик');
