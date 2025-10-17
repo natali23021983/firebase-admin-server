@@ -8,66 +8,158 @@ process.on('unhandledRejection', (reason, promise) => {
   console.error('🔥 НЕОБРАБОТАННЫЙ ПРОМИС:', reason);
 });
 
-const quickCache = new Map();
+// ==================== ОПТИМИЗАЦИЯ №1: LRU КЭШ ВМЕСТО SIMPLE MAP ====================
+class LRUCache {
+  constructor(maxSize = 1000, maxMemoryMB = 500) {
+    this.maxSize = maxSize;
+    this.maxMemoryBytes = maxMemoryMB * 1024 * 1024;
+    this.cache = new Map();
+    this.hits = 0;
+    this.misses = 0;
+  }
 
-// 🔥 ОПТИМИЗИРОВАННЫЙ мониторинг памяти
-const MEMORY_LIMIT = 200 * 1024 * 1024; // 200MB
-const CACHE_LIMIT = 25; // Уменьшенный кэш
+  get(key) {
+    if (!this.cache.has(key)) {
+      this.misses++;
+      return null;
+    }
+
+    const value = this.cache.get(key);
+    this.cache.delete(key);
+    this.cache.set(key, value);
+    this.hits++;
+
+    return value.data;
+  }
+
+  set(key, value, ttl = 300000) {
+    const item = {
+      data: value,
+      timestamp: Date.now(),
+      ttl: ttl
+    };
+
+    if (this.cache.has(key)) {
+      this.cache.delete(key);
+    } else if (this.cache.size >= this.maxSize) {
+      const firstKey = this.cache.keys().next().value;
+      this.cache.delete(firstKey);
+    }
+
+    this.cache.set(key, item);
+
+    if (this.cache.size % 10 === 0) {
+      this.cleanup();
+    }
+  }
+
+  cleanup() {
+    const now = Date.now();
+    for (let [key, value] of this.cache.entries()) {
+      if (now - value.timestamp > value.ttl) {
+        this.cache.delete(key);
+      }
+    }
+  }
+
+  getStats() {
+    const total = this.hits + this.misses;
+    return {
+      size: this.cache.size,
+      hits: this.hits,
+      misses: this.misses,
+      hitRate: total > 0 ? ((this.hits / total) * 100).toFixed(2) + '%' : '0%',
+      memoryUsage: this.getMemoryUsage() + 'MB'
+    };
+  }
+
+  getMemoryUsage() {
+    let size = 0;
+    for (let [key, value] of this.cache.entries()) {
+      size += key.length;
+      try {
+        size += JSON.stringify(value).length;
+      } catch (e) {
+        size += 100;
+      }
+    }
+    return Math.round(size / 1024 / 1024);
+  }
+}
+
+// ==================== ИНИЦИАЛИЗАЦИЯ ОПТИМИЗИРОВАННОГО КЭША ====================
+const quickCache = new LRUCache(1000, 500);
+
+// ==================== ОПТИМИЗАЦИЯ №2: УВЕЛИЧЕННЫЕ ТАЙМАУТЫ И RETRY ЛОГИКА ====================
+const FIREBASE_TIMEOUT = 15000;
+const S3_TIMEOUT = 30000;
+const RETRY_ATTEMPTS = 3;
+const RETRY_BASE_DELAY = 1000;
+
+// НОВАЯ ФУНКЦИЯ: Retry логика с exponential backoff
+const withRetry = async (operation, operationName = 'Operation', timeoutMs = FIREBASE_TIMEOUT, maxRetries = RETRY_ATTEMPTS) => {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const result = await Promise.race([
+        operation(),
+        new Promise((_, reject) =>
+          setTimeout(() => {
+            reject(new Error(`Таймаут операции ${operationName} после ${timeoutMs}мс (попытка ${attempt}/${maxRetries})`));
+          }, timeoutMs)
+        )
+      ]);
+      return result;
+    } catch (error) {
+      if (attempt === maxRetries) throw error;
+
+      const delay = RETRY_BASE_DELAY * Math.pow(2, attempt - 1);
+      console.warn(`🔄 Повтор ${attempt}/${maxRetries} для ${operationName} через ${delay}мс:`, error.message);
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+  }
+};
+
+const withStrictTimeout = (promise, timeoutMs, operationName = 'Operation') => {
+  return withRetry(() => promise, operationName, timeoutMs, 1);
+};
+
+// ==================== ОПТИМИЗАЦИЯ №3: УВЕЛИЧЕННЫЕ ЛИМИТЫ ПАМЯТИ ====================
+const MEMORY_LIMIT = 500 * 1024 * 1024;
 let emergencyMode = false;
 
 setInterval(() => {
   const memory = process.memoryUsage();
   const heapUsedMB = Math.round(memory.heapUsed / 1024 / 1024);
+  const memoryLimitMB = MEMORY_LIMIT / 1024 / 1024;
 
-  if (heapUsedMB > MEMORY_LIMIT / 1024 / 1024) {
-    console.warn('🚨 CRITICAL MEMORY:', {
-      heapUsed: heapUsedMB + 'MB',
-      heapTotal: Math.round(memory.heapTotal / 1024 / 1024) + 'MB'
+  if (heapUsedMB > memoryLimitMB * 0.9) {
+    console.warn('🚨 КРИТИЧЕСКАЯ ПАМЯТЬ:', {
+      используется: heapUsedMB + 'MB',
+      всего: Math.round(memory.heapTotal / 1024 / 1024) + 'MB',
+      лимит: memoryLimitMB + 'MB'
     });
 
-    // Агрессивная очистка кэша
-    quickCache.clear();
+    const now = Date.now();
+    let cleanedCount = 0;
 
-    // Принудительный сбор мусора
+    for (let [key, value] of quickCache.cache.entries()) {
+      if (now - value.timestamp > 60000) {
+        quickCache.cache.delete(key);
+        cleanedCount++;
+      }
+    }
+
+    console.log(`🧹 Очистка памяти: удалено ${cleanedCount} старых записей кэша`);
+
     if (global.gc) {
       global.gc();
     }
   }
 
-  // Регулярная очистка кэша
-  if (quickCache.size > CACHE_LIMIT) {
-    const now = Date.now();
-    let deletedCount = 0;
-
-    for (let [key, value] of quickCache.entries()) {
-      if (now - value.timestamp > 300000) { // 5 минут
-        quickCache.delete(key);
-        deletedCount++;
-      }
-      if (quickCache.size <= CACHE_LIMIT * 0.7) break;
-    }
-
-    if (deletedCount > 0 && process.env.NODE_ENV === 'development') {
-      console.log(`🧹 Очищено ${deletedCount} устаревших записей кэша`);
-    }
+  if (process.env.NODE_ENV === 'development' && Date.now() % 300000 < 1000) {
+    console.log('📊 Статистика кэша:', quickCache.getStats());
   }
-}, 300000); // 5 минут
-
-// 🔥 ОПТИМИЗИРОВАННЫЕ таймауты
-const FIREBASE_TIMEOUT = 5000; // 5 секунд
-const S3_TIMEOUT = 10000; // 10 секунд
-
-const withStrictTimeout = (promise, timeoutMs, operationName = 'Operation') => {
-  return Promise.race([
-    promise,
-    new Promise((_, reject) =>
-      setTimeout(() => {
-        console.warn(`⏰ Timeout exceeded for ${operationName}`);
-        reject(new Error(`${operationName} timeout after ${timeoutMs}ms`));
-      }, timeoutMs)
-    )
-  ]);
-};
+}, 30000);
 
 const express = require('express');
 const cors = require("cors");
@@ -81,19 +173,17 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// 🔥 УМЕНЬШЕННЫЕ лимиты для экономии памяти
-app.use(express.json({ limit: '1mb' }));
-app.use(express.urlencoded({ extended: true, limit: '1mb' }));
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: {
-    fileSize: 2 * 1024 * 1024, // 2MB
-    files: 1
+    fileSize: 10 * 1024 * 1024,
+    files: 5
   }
 });
 
-// === MIME types mapping ===
 const mimeTypeMapping = {
   'image/jpeg': '.jpg',
   'image/png': '.png',
@@ -156,23 +246,23 @@ async function verifyToken(req, res, next) {
   const token = authHeader.startsWith("Bearer ") ? authHeader.split("Bearer ")[1] : null;
 
   if (!token) {
-    console.warn("🚫 verifyToken: отсутствует заголовок Authorization");
+    console.warn("🚫 Проверка токена: отсутствует заголовок Authorization");
     return res.status(401).send("Нет токена");
   }
 
   try {
-    const decoded = await withStrictTimeout(
-      admin.auth().verifyIdToken(token),
-      FIREBASE_TIMEOUT,
-      'Firebase token verification'
+    const decoded = await withRetry(
+      () => admin.auth().verifyIdToken(token),
+      'Проверка токена Firebase',
+      FIREBASE_TIMEOUT
     );
     req.user = decoded;
     if (process.env.NODE_ENV === 'development') {
-      console.log("✅ verifyToken: токен валиден, uid:", decoded.uid);
+      console.log("✅ Проверка токена: токен валиден, uid:", decoded.uid);
     }
     next();
   } catch (err) {
-    console.error("❌ verifyToken: токен недействителен или истёк", err);
+    console.error("❌ Проверка токена: токен недействителен или истёк", err);
     res.status(403).send("Неверный токен");
   }
 }
@@ -189,19 +279,13 @@ async function uploadToS3(buffer, fileName, contentType) {
   return `https://${BUCKET_NAME}.storage.yandexcloud.net/${fileName}`;
 }
 
-async function uploadToS3WithRetry(buffer, fileName, contentType, retries = 2) {
-  for (let attempt = 1; attempt <= retries; attempt++) {
-    try {
-      return await withStrictTimeout(
-        uploadToS3(buffer, fileName, contentType),
-        S3_TIMEOUT,
-        `S3 upload attempt ${attempt}`
-      );
-    } catch (error) {
-      if (attempt === retries) throw error;
-      await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
-    }
-  }
+async function uploadToS3WithRetry(buffer, fileName, contentType, retries = RETRY_ATTEMPTS) {
+  return withRetry(
+    () => uploadToS3(buffer, fileName, contentType),
+    'Загрузка в S3',
+    S3_TIMEOUT,
+    retries
+  );
 }
 
 async function deleteFromS3(urls) {
@@ -212,38 +296,35 @@ async function deleteFromS3(urls) {
 
   if (keys.length === 0) return;
 
-  await withStrictTimeout(
-    s3.send(new DeleteObjectsCommand({
+  await withRetry(
+    () => s3.send(new DeleteObjectsCommand({
       Bucket: BUCKET_NAME,
       Delete: { Objects: keys }
     })),
-    S3_TIMEOUT,
-    'S3 delete objects'
+    'Удаление из S3',
+    S3_TIMEOUT
   );
 }
 
-// 🔥 ОПТИМИЗИРОВАННАЯ функция кэширования
+// ==================== ОПТИМИЗАЦИЯ №4: УЛУЧШЕННАЯ ФУНКЦИЯ КЭШИРОВАНИЯ ГРУПП ====================
 async function getGroupWithCache(groupId) {
   const cacheKey = `group_${groupId}`;
   const cached = quickCache.get(cacheKey);
 
-  if (cached && (Date.now() - cached.timestamp < 60000)) {
-    return cached.data;
+  if (cached) {
+    return cached;
   }
 
   try {
-    const groupSnap = await withStrictTimeout(
-      db.ref(`groups/${groupId}`).once('value'),
-      FIREBASE_TIMEOUT,
-      `Firebase group fetch for ${groupId}`
+    const groupSnap = await withRetry(
+      () => db.ref(`groups/${groupId}`).once('value'),
+      `Получение группы ${groupId} из Firebase`,
+      FIREBASE_TIMEOUT
     );
     const groupData = groupSnap.val();
 
     if (groupData) {
-      quickCache.set(cacheKey, {
-        data: groupData,
-        timestamp: Date.now()
-      });
+      quickCache.set(cacheKey, groupData, 300000);
     }
 
     return groupData;
@@ -253,42 +334,201 @@ async function getGroupWithCache(groupId) {
   }
 }
 
+// ==================== ОПТИМИЗАЦИЯ №5: УЛУЧШЕННЫЙ ПОИСК РОДИТЕЛЕЙ ====================
+async function findParentsByGroupIdOptimized(groupId) {
+  try {
+    const groupData = await getGroupWithCache(groupId);
+    const childrenInGroup = groupData?.children || {};
+    const childIds = Object.keys(childrenInGroup);
+
+    if (childIds.length === 0) return [];
+
+    const parentsSnap = await withRetry(
+      () => db.ref('users')
+        .orderByChild('role')
+        .equalTo('Родитель')
+        .once('value'),
+      'Оптимизированный поиск родителей',
+      FIREBASE_TIMEOUT
+    );
+
+    const users = parentsSnap.val() || {};
+    const parents = [];
+    const foundParentIds = new Set();
+
+    const childNamesMap = new Map();
+    Object.entries(childrenInGroup).forEach(([childId, childName]) => {
+      childNamesMap.set(childName.trim().toLowerCase(), childId);
+    });
+
+    for (const [userId, user] of Object.entries(users)) {
+      if (user.children && !foundParentIds.has(userId)) {
+        for (const [parentChildId, parentChildData] of Object.entries(user.children)) {
+          if (parentChildData && parentChildData.fullName) {
+            const normalizedName = parentChildData.fullName.trim().toLowerCase();
+
+            if (childNamesMap.has(normalizedName)) {
+              parents.push({
+                userId: userId,
+                name: user.name || "Родитель",
+                fcmToken: user.fcmToken || null,
+                childId: parentChildId,
+                childName: parentChildData.fullName,
+                childBirthDate: parentChildData.birthDate || "",
+                childGroup: groupId
+              });
+              foundParentIds.add(userId);
+              break;
+            }
+          }
+        }
+      }
+    }
+
+    return parents;
+
+  } catch (error) {
+    console.error("❌ Ошибка оптимизированного поиска родителей:", error);
+    return [];
+  }
+}
+
+// ==================== ОПТИМИЗАЦИЯ №6: ПАРАЛЛЕЛЬНАЯ ОТПРАВКА УВЕДОМЛЕНИЙ ====================
+async function sendNotificationsParallel(recipients, createMessagePayload, batchSize = 10) {
+  const results = {
+    successful: 0,
+    failed: 0,
+    errors: []
+  };
+
+  for (let i = 0; i < recipients.length; i += batchSize) {
+    const batch = recipients.slice(i, i + batchSize);
+
+    const promises = batch.map(async (recipient) => {
+      try {
+        const messagePayload = createMessagePayload(recipient);
+        await admin.messaging().send(messagePayload);
+        return { success: true, recipient };
+      } catch (error) {
+        if (error.code === "messaging/registration-token-not-registered") {
+          await removeInvalidToken(recipient.fcmToken);
+        }
+        return { success: false, recipient, error };
+      }
+    });
+
+    const batchResults = await Promise.allSettled(promises);
+
+    batchResults.forEach(result => {
+      if (result.status === 'fulfilled') {
+        if (result.value.success) {
+          results.successful++;
+        } else {
+          results.failed++;
+          results.errors.push(result.value.error);
+        }
+      } else {
+        results.failed++;
+        results.errors.push(result.reason);
+      }
+    });
+
+    if (i + batchSize < recipients.length) {
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+  }
+
+  return results;
+}
+
+async function sendEventNotificationsOptimized({
+  parents,
+  groupId,
+  groupName,
+  eventId,
+  title,
+  time,
+  place,
+  comments,
+  date,
+  notificationBody
+}) {
+  try {
+    const parentsWithTokens = parents.filter(parent => parent.fcmToken && parent.fcmToken.trim() !== "");
+
+    if (parentsWithTokens.length === 0) {
+      return { successful: 0, failed: 0, totalTokens: 0 };
+    }
+
+    const createMessagePayload = (parent) => ({
+      token: parent.fcmToken,
+      notification: {
+        title: "📅 Новое событие",
+        body: notificationBody
+      },
+      data: {
+        type: "new_event",
+        autoOpenFragment: "events",
+        groupId: String(groupId || ""),
+        groupName: String(groupName || ""),
+        eventId: String(eventId || ""),
+        title: String(title || ""),
+        time: String(time || ""),
+        place: String(place || ""),
+        comments: String(comments || ""),
+        date: String(date || ""),
+        timestamp: String(Date.now()),
+        childId: parent.childId || "",
+        userId: parent.userId || "",
+        childFullName: parent.childName || "",
+        childGroup: String(groupName || ""),
+        childBirthDate: parent.childBirthDate || ""
+      }
+    });
+
+    return await sendNotificationsParallel(parentsWithTokens, createMessagePayload, 15);
+
+  } catch (err) {
+    console.error("❌ Ошибка в sendEventNotificationsOptimized:", err);
+    return { successful: 0, failed: parents.length, errors: [err] };
+  }
+}
+
 // 🔥 Метрики производительности
 const performanceMetrics = {
   requests: 0,
   errors: 0,
   slowRequests: 0,
+  cacheHits: 0,
+  cacheMisses: 0,
   startTime: Date.now()
 };
 
-// 🔥 ОПТИМИЗИРОВАННОЕ middleware логирования
+// 🔥 Middleware логирования
 app.use((req, res, next) => {
-  // Пропускать health-check запросы из логов
-  if (req.url === '/health' || req.url === '/ping') {
+  if (req.url === '/health' || req.url === '/ping' || req.url === '/metrics') {
     return next();
   }
 
   performanceMetrics.requests++;
-
   const start = Date.now();
   const requestId = Math.random().toString(36).substring(7);
 
   if (process.env.NODE_ENV === 'development') {
-    console.log(`📨 [${requestId}] ${req.method} ${req.url} - Started`);
+    console.log(`📨 [${requestId}] ${req.method} ${req.url} - Начало`);
   }
 
   res.on('finish', () => {
     const duration = Date.now() - start;
-    const isSlow = duration > 3000; // 3 секунды
+    const isSlow = duration > 5000;
 
     if (isSlow) {
       performanceMetrics.slowRequests++;
-      console.warn(`🐌 [${requestId}] SLOW: ${req.method} ${req.url} - ${duration}ms`);
+      console.warn(`🐌 [${requestId}] МЕДЛЕННО: ${req.method} ${req.url} - ${duration}мс`);
     }
 
-    // Логировать только в development
     if (process.env.NODE_ENV === 'development') {
-      console.log(`✅ [${requestId}] ${req.method} ${req.url} - ${duration}ms`);
+      console.log(`✅ [${requestId}] ${req.method} ${req.url} - ${duration}мс`);
     }
   });
 
@@ -301,10 +541,10 @@ app.post('/deleteUserByName', async (req, res) => {
   if (!fullName) return res.status(400).send("fullName обязателен");
 
   try {
-    const usersSnap = await withStrictTimeout(
-      db.ref('users').once('value'),
-      15000,
-      'deleteUserByName users fetch'
+    const usersSnap = await withRetry(
+      () => db.ref('users').once('value'),
+      'Удаление пользователя по имени',
+      20000
     );
     const users = usersSnap.val() || {};
     let found = false;
@@ -313,11 +553,9 @@ app.post('/deleteUserByName', async (req, res) => {
       const name = user.name?.trim().toLowerCase();
       const role = user.role?.trim().toLowerCase();
 
-      // Родитель
       if (name === fullName && role === 'родитель') {
         found = true;
 
-        // 1. Удаляем детей из групп и S3
         if (user.children) {
           const filesToDelete = [];
 
@@ -333,10 +571,8 @@ app.post('/deleteUserByName', async (req, res) => {
           }
         }
 
-        // 2. Удаляем пользователя из базы
         await db.ref(`users/${userId}`).remove();
 
-        // 3. Удаляем из Firebase Auth
         try {
           await auth.getUser(userId);
           await auth.deleteUser(userId);
@@ -347,15 +583,13 @@ app.post('/deleteUserByName', async (req, res) => {
         return res.send("Родитель и его дети удалены.");
       }
 
-      // Педагог
       if (name === fullName && role === 'педагог') {
         found = true;
 
-        // Удаляем из всех групп
-        const groupsSnap = await withStrictTimeout(
-          db.ref('groups').once('value'),
-          10000,
-          'deleteUserByName groups fetch'
+        const groupsSnap = await withRetry(
+          () => db.ref('groups').once('value'),
+          'Получение групп для удаления педагога',
+          10000
         );
         const groups = groupsSnap.val() || {};
 
@@ -365,7 +599,6 @@ app.post('/deleteUserByName', async (req, res) => {
           }
         }
 
-        // Удаляем пользователя
         await db.ref(`users/${userId}`).remove();
 
         try {
@@ -378,25 +611,21 @@ app.post('/deleteUserByName', async (req, res) => {
         return res.send("Педагог удалён.");
       }
 
-      // Отдельный ребенок
       if (user.children) {
         for (const [childId, child] of Object.entries(user.children)) {
           if (child.fullName?.trim().toLowerCase() === fullName) {
             found = true;
 
-            // Удаляем из группы
             if (child.group) {
               await db.ref(`groups/${child.group}/children/${childId}`).remove();
             }
 
-            // Удаляем файлы ребенка из S3
             const filesToDelete = [];
             if (child.avatarUrl) filesToDelete.push(child.avatarUrl);
             if (filesToDelete.length > 0) {
               await deleteFromS3(filesToDelete);
             }
 
-            // Удаляем ребенка из пользователя
             await db.ref(`users/${userId}/children/${childId}`).remove();
 
             return res.send("Ребёнок удалён.");
@@ -429,12 +658,11 @@ app.post('/deleteChild', async (req, res) => {
   }
 
   try {
-    // 1. Получаем данные ребенка
     const childRef = db.ref(`users/${userId}/children/${childId}`);
-    const childSnap = await withStrictTimeout(
-      childRef.once('value'),
-      10000,
-      'deleteChild child fetch'
+    const childSnap = await withRetry(
+      () => childRef.once('value'),
+      'Получение данных ребенка для удаления',
+      10000
     );
 
     if (!childSnap.exists()) {
@@ -445,14 +673,13 @@ app.post('/deleteChild', async (req, res) => {
     const groupName = child.group;
     const childName = child.fullName.trim();
 
-    // 2. Находим ID группы по названию
     let groupId = null;
     if (groupName) {
       const groupsRef = db.ref('groups');
-      const groupsSnap = await withStrictTimeout(
-        groupsRef.once('value'),
-        10000,
-        'deleteChild groups fetch'
+      const groupsSnap = await withRetry(
+        () => groupsRef.once('value'),
+        'Поиск группы ребенка',
+        10000
       );
       const groups = groupsSnap.val() || {};
 
@@ -468,13 +695,12 @@ app.post('/deleteChild', async (req, res) => {
       }
     }
 
-    // 3. Удаляем ребенка из группы
     if (groupId) {
       const groupChildrenRef = db.ref(`groups/${groupId}/children`);
-      const groupChildrenSnap = await withStrictTimeout(
-        groupChildrenRef.once('value'),
-        5000,
-        'deleteChild group children fetch'
+      const groupChildrenSnap = await withRetry(
+        () => groupChildrenRef.once('value'),
+        'Получение детей группы',
+        5000
       );
       const groupChildren = groupChildrenSnap.val() || {};
 
@@ -491,7 +717,6 @@ app.post('/deleteChild', async (req, res) => {
       }
     }
 
-    // 4. Удаляем файлы из S3
     const filesToDelete = [];
     if (child.avatarUrl) {
       filesToDelete.push(child.avatarUrl);
@@ -501,7 +726,6 @@ app.post('/deleteChild', async (req, res) => {
       await deleteFromS3(filesToDelete);
     }
 
-    // 5. Удаляем ребенка из базы родителя
     await childRef.remove();
 
     res.json({
@@ -527,10 +751,10 @@ app.post("/update-user", async (req, res) => {
     const { fullName, newEmail } = req.body;
     if (!fullName || !newEmail) return res.status(400).json({ error: "fullName и newEmail обязательны" });
 
-    const snap = await withStrictTimeout(
-      db.ref("users").orderByChild("name").equalTo(fullName).once("value"),
-      10000,
-      'update-user user search'
+    const snap = await withRetry(
+      () => db.ref("users").orderByChild("name").equalTo(fullName).once("value"),
+      'Поиск пользователя для обновления email',
+      15000
     );
     if (!snap.exists()) return res.status(404).json({ error: "Пользователь не найден" });
 
@@ -573,18 +797,16 @@ app.post("/news", verifyToken, async (req, res) => {
     }
 
     if (newsId) {
-      // Редактирование
       const ref = db.ref(`news/${groupId}/${newsId}`);
-      const snap = await withStrictTimeout(
-        ref.once("value"),
-        5000,
-        'news edit fetch'
+      const snap = await withRetry(
+        () => ref.once("value"),
+        'Редактирование новости',
+        10000
       );
       const oldNews = snap.val();
       if (!oldNews) return res.status(404).json({ error: "Новость не найдена" });
       if (oldNews.authorId !== authorId) return res.status(403).json({ error: "Нет прав" });
 
-      // Удаляем из S3 те, которых больше нет
       const oldUrls = oldNews.mediaUrls || [];
       const keepSet = new Set(mediaUrls);
       const toDelete = oldUrls.filter(url => !keepSet.has(url));
@@ -602,7 +824,6 @@ app.post("/news", verifyToken, async (req, res) => {
       return res.json({ success: true, updated: true });
     }
 
-    // Добавление новости
     const id = uuidv4();
     const ref = db.ref(`news/${groupId}/${id}`);
 
@@ -636,10 +857,10 @@ app.get("/news", verifyToken, async (req, res) => {
       return res.status(400).json({ error: "groupId обязателен" });
     }
 
-    const snap = await withStrictTimeout(
-      db.ref(`news/${groupId}`).once("value"),
-      10000,
-      'news list fetch'
+    const snap = await withRetry(
+      () => db.ref(`news/${groupId}`).once("value"),
+      'Получение списка новостей',
+      10000
     );
     const newsData = snap.val() || {};
 
@@ -676,10 +897,10 @@ app.post("/deleteNews", verifyToken, async (req, res) => {
       return res.status(400).json({ error: "groupId и newsId обязательны" });
     }
 
-    const snap = await withStrictTimeout(
-      db.ref(`news/${groupId}/${newsId}`).once('value'),
-      5000,
-      'deleteNews fetch'
+    const snap = await withRetry(
+      () => db.ref(`news/${groupId}/${newsId}`).once('value'),
+      'Удаление новости',
+      5000
     );
     const data = snap.val();
     if (!data) return res.status(404).json({ error: "Новость не найдена" });
@@ -739,10 +960,10 @@ app.post('/generate-upload-url', verifyToken, async (req, res) => {
     }
 
     if (finalGroupId && folder !== 'news/') {
-      const hasAccess = await withStrictTimeout(
-        checkChatAccess(req.user.uid, finalGroupId, folder === 'private-chats/'),
-        5000,
-        'chat access check'
+      const hasAccess = await withRetry(
+        () => checkChatAccess(req.user.uid, finalGroupId, folder === 'private-chats/'),
+        'Проверка доступа к чату',
+        5000
       );
       if (!hasAccess) {
         return res.status(403).json({ error: "Нет доступа к этому чату" });
@@ -762,10 +983,10 @@ app.post('/generate-upload-url', verifyToken, async (req, res) => {
     };
 
     const command = new PutObjectCommand(signedUrlParams);
-    const uploadUrl = await withStrictTimeout(
-      getSignedUrl(s3, command, { expiresIn: 300 }),
-      5000,
-      'S3 signed URL generation'
+    const uploadUrl = await withRetry(
+      () => getSignedUrl(s3, command, { expiresIn: 300 }),
+      'Генерация signed URL S3',
+      5000
     );
     const fileUrl = `https://${BUCKET_NAME}.storage.yandexcloud.net/${key}`;
 
@@ -825,10 +1046,10 @@ async function isPrivateChatId(chatId) {
   try {
     if (chatId.includes('_')) {
       const privateChatRef = db.ref(`chats/private/${chatId}`);
-      const privateSnap = await withStrictTimeout(
-        privateChatRef.once('value'),
-        5000,
-        'private chat check'
+      const privateSnap = await withRetry(
+        () => privateChatRef.once('value'),
+        'Проверка приватного чата',
+        5000
       );
 
       if (privateSnap.exists()) {
@@ -836,10 +1057,10 @@ async function isPrivateChatId(chatId) {
       }
 
       const groupChatRef = db.ref(`chats/groups/${chatId}`);
-      const groupSnap = await withStrictTimeout(
-        groupChatRef.once('value'),
-        5000,
-        'group chat check'
+      const groupSnap = await withRetry(
+        () => groupChatRef.once('value'),
+        'Проверка группового чата',
+        5000
       );
 
       if (groupSnap.exists()) {
@@ -850,10 +1071,10 @@ async function isPrivateChatId(chatId) {
     }
 
     const groupChatRef = db.ref(`chats/groups/${chatId}`);
-    const groupSnap = await withStrictTimeout(
-      groupChatRef.once('value'),
-      5000,
-      'group chat existence check'
+    const groupSnap = await withRetry(
+      () => groupChatRef.once('value'),
+      'Проверка существования группового чата',
+      5000
     );
 
     return !groupSnap.exists();
@@ -863,61 +1084,27 @@ async function isPrivateChatId(chatId) {
   }
 }
 
-// 🔥 ОПТИМИЗИРОВАННЫЙ поиск родителей
-async function findParentsByGroupIdOptimized(groupId) {
+async function removeInvalidToken(invalidToken) {
   try {
-    const groupData = await getGroupWithCache(groupId);
-    const childrenInGroup = groupData?.children || {};
-    const childIds = Object.keys(childrenInGroup);
-
-    if (childIds.length === 0) return [];
-
-    const usersSnap = await withStrictTimeout(
-      db.ref('users').once('value'),
-      10000,
-      'optimized parents search'
+    const usersSnap = await withRetry(
+      () => db.ref('users').once('value'),
+      'Поиск пользователей для удаления токена',
+      10000
     );
-
     const users = usersSnap.val() || {};
-    const parents = [];
-    const foundParentIds = new Set();
-
-    // Оптимизированный алгоритм поиска
-    const childNamesMap = new Map();
-    Object.entries(childrenInGroup).forEach(([childId, childName]) => {
-      childNamesMap.set(childName.trim().toLowerCase(), childId);
-    });
 
     for (const [userId, user] of Object.entries(users)) {
-      if (user.role === "Родитель" && user.children && !foundParentIds.has(userId)) {
-
-        for (const [parentChildId, parentChildData] of Object.entries(user.children)) {
-          if (parentChildData && parentChildData.fullName) {
-            const normalizedName = parentChildData.fullName.trim().toLowerCase();
-
-            if (childNamesMap.has(normalizedName)) {
-              parents.push({
-                userId: userId,
-                name: user.name || "Родитель",
-                fcmToken: user.fcmToken || null,
-                childId: parentChildId,
-                childName: parentChildData.fullName,
-                childBirthDate: parentChildData.birthDate || "",
-                childGroup: groupId
-              });
-              foundParentIds.add(userId);
-              break;
-            }
-          }
-        }
+      if (user.fcmToken === invalidToken) {
+        await db.ref(`users/${userId}`).update({ fcmToken: null });
+        return { success: true, userId };
       }
     }
 
-    return parents;
+    return { success: false, message: "Токен не найден" };
 
-  } catch (error) {
-    console.error("❌ Ошибка оптимизированного поиска родителей:", error);
-    return [];
+  } catch (err) {
+    console.error("❌ Ошибка удаления токена:", err);
+    return { success: false, error: err.message };
   }
 }
 
@@ -931,10 +1118,10 @@ app.post("/send-message", verifyToken, async (req, res) => {
       return res.status(400).json({ error: "chatId и message обязательны" });
     }
 
-    const senderSnap = await withStrictTimeout(
-      db.ref(`users/${senderId}`).once('value'),
-      5000,
-      'sender user fetch'
+    const senderSnap = await withRetry(
+      () => db.ref(`users/${senderId}`).once('value'),
+      'Получение данных отправителя',
+      5000
     );
     const sender = senderSnap.val();
     const senderName = sender?.name || "Неизвестный";
@@ -951,10 +1138,10 @@ app.post("/send-message", verifyToken, async (req, res) => {
       fileName: fileName || null
     };
 
-    const isPrivateChat = await withStrictTimeout(
-      isPrivateChatId(chatId),
-      5000,
-      'chat type detection'
+    const isPrivateChat = await withRetry(
+      () => isPrivateChatId(chatId),
+      'Определение типа чата',
+      5000
     );
 
     let chatRef;
@@ -966,7 +1153,6 @@ app.post("/send-message", verifyToken, async (req, res) => {
 
     await chatRef.set(messageData);
 
-    // Уведомления в фоне
     sendChatNotification({
       chatId,
       senderId,
@@ -1020,128 +1206,6 @@ app.post("/save-fcm-token", verifyToken, async (req, res) => {
   }
 });
 
-async function removeInvalidToken(invalidToken) {
-  try {
-    const usersSnap = await withStrictTimeout(
-      db.ref('users').once('value'),
-      10000,
-      'users fetch for token removal'
-    );
-    const users = usersSnap.val() || {};
-
-    for (const [userId, user] of Object.entries(users)) {
-      if (user.fcmToken === invalidToken) {
-        await db.ref(`users/${userId}`).update({ fcmToken: null });
-        return { success: true, userId };
-      }
-    }
-
-    return { success: false, message: "Токен не найден" };
-
-  } catch (err) {
-    console.error("❌ Ошибка удаления токена:", err);
-    return { success: false, error: err.message };
-  }
-}
-
-// === Уведомления о событиях ===
-app.post("/send-event-notification", verifyToken, async (req, res) => {
-  try {
-    const {
-      groupId,
-      groupName,
-      eventId,
-      title,
-      time,
-      place,
-      comments,
-      date
-    } = req.body;
-
-    if (!groupId || !eventId || !title) {
-      return res.status(400).json({
-        error: "groupId, eventId, title обязательны"
-      });
-    }
-
-    const actualGroupName = await withStrictTimeout(
-      getGroupName(groupId),
-      5000,
-      'group name fetch'
-    );
-
-    const parents = await withStrictTimeout(
-      findParentsByGroupIdOptimized(groupId),
-      15000,
-      'optimized parents search'
-    );
-
-    if (parents.length === 0) {
-      return res.json({
-        success: true,
-        message: "Событие создано, но родители не найдены"
-      });
-    }
-
-    const parentsWithTokens = parents.filter(parent => parent.fcmToken && parent.fcmToken.trim() !== "");
-    const notificationBody = formatEventNotification(title, time, place, actualGroupName);
-
-    const sendResults = await sendEventNotifications({
-      parents: parents,
-      groupId,
-      groupName: actualGroupName,
-      eventId,
-      title,
-      time,
-      place,
-      comments,
-      date,
-      notificationBody
-    });
-
-    res.json({
-      success: true,
-      message: `Уведомления отправлены ${sendResults.successful} родителям`,
-      recipients: sendResults.successful,
-      totalParents: parents.length,
-      parentsWithTokens: sendResults.successful
-    });
-
-  } catch (err) {
-    performanceMetrics.errors++;
-
-    if (err.message.includes('timeout')) {
-      return res.status(408).json({
-        error: "Операция поиска родителей заняла слишком много времени"
-      });
-    }
-
-    console.error("❌ Ошибка отправки уведомления о событии:", err);
-    res.status(500).json({
-      error: "Внутренняя ошибка сервера: " + err.message
-    });
-  }
-});
-
-// Вспомогательные функции
-async function getGroupName(groupId) {
-  try {
-    const groupData = await getGroupWithCache(groupId);
-    return groupData?.name || `Группа ${groupId}`;
-  } catch (error) {
-    console.error("❌ Ошибка получения названия группы:", error);
-    return `Группа ${groupId}`;
-  }
-}
-
-function formatEventNotification(title, time, place, groupName) {
-  let notification = `📅 ${title}`;
-  if (time) notification += ` в ${time}`;
-  if (place) notification += ` (${place})`;
-  if (groupName) notification += ` • ${groupName}`;
-  return notification;
-}
-
 async function sendChatNotification({
   chatId,
   senderId,
@@ -1161,10 +1225,10 @@ async function sendChatNotification({
       const otherUserId = parts.find(id => id !== senderId);
 
       if (otherUserId) {
-        const userSnap = await withStrictTimeout(
-          db.ref(`users/${otherUserId}`).once('value'),
-          5000,
-          'private chat user fetch'
+        const userSnap = await withRetry(
+          () => db.ref(`users/${otherUserId}`).once('value'),
+          'Получение пользователя приватного чата',
+          5000
         );
         const user = userSnap.val();
         if (user && user.fcmToken) {
@@ -1183,10 +1247,10 @@ async function sendChatNotification({
         if (group.teachers) {
           for (const [teacherId, teacherName] of Object.entries(group.teachers)) {
             if (teacherId !== senderId) {
-              const teacherSnap = await withStrictTimeout(
-                db.ref(`users/${teacherId}`).once('value'),
-                3000,
-                `teacher ${teacherId} fetch`
+              const teacherSnap = await withRetry(
+                () => db.ref(`users/${teacherId}`).once('value'),
+                `Получение педагога ${teacherId}`,
+                3000
               );
               const teacher = teacherSnap.val();
               if (teacher && teacher.fcmToken) {
@@ -1249,107 +1313,115 @@ function getFileTypeText(messageType) {
   }
 }
 
-async function sendEventNotifications({
-  parents,
-  groupId,
-  groupName,
-  eventId,
-  title,
-  time,
-  place,
-  comments,
-  date,
-  notificationBody
-}) {
+// === Отправка уведомлений о событиях ===
+app.post("/send-event-notification", verifyToken, async (req, res) => {
   try {
-    const parentsWithTokens = parents.filter(parent => parent.fcmToken && parent.fcmToken.trim() !== "");
-    let successful = 0;
-    let failed = 0;
+    const { groupId, eventId, title, time, place, comments, date } = req.body;
 
-    for (const parent of parentsWithTokens) {
-      try {
-        const messagePayload = {
-          token: parent.fcmToken,
-          notification: {
-            title: "📅 Новое событие",
-            body: notificationBody
-          },
-          data: {
-            type: "new_event",
-            autoOpenFragment: "events",
-            groupId: String(groupId || ""),
-            groupName: String(groupName || ""),
-            eventId: String(eventId || ""),
-            title: String(title || ""),
-            time: String(time || ""),
-            place: String(place || ""),
-            comments: String(comments || ""),
-            date: String(date || ""),
-            timestamp: String(Date.now()),
-            childId: parent.childId || "",
-            userId: parent.userId || "",
-            childFullName: parent.childName || "",
-            childGroup: String(groupName || ""),
-            childBirthDate: parent.childBirthDate || ""
-          }
-        };
-
-        await admin.messaging().send(messagePayload);
-        successful++;
-      } catch (tokenError) {
-        failed++;
-        if (tokenError.code === "messaging/registration-token-not-registered") {
-          await removeInvalidToken(parent.fcmToken);
-        }
-      }
+    if (!groupId || !eventId || !title) {
+      return res.status(400).json({
+        error: "groupId, eventId, title обязательны"
+      });
     }
 
-    return { successful, failed, totalTokens: parentsWithTokens.length };
+    const actualGroupName = await withRetry(
+      () => getGroupName(groupId),
+      'Получение названия группы',
+      10000
+    );
+
+    const parents = await withRetry(
+      () => findParentsByGroupIdOptimized(groupId),
+      'Оптимизированный поиск родителей',
+      30000
+    );
+
+    if (parents.length === 0) {
+      return res.json({
+        success: true,
+        message: "Событие создано, но родители не найдены"
+      });
+    }
+
+    const notificationBody = formatEventNotification(title, time, place, actualGroupName);
+
+    const sendResults = await sendEventNotificationsOptimized({
+      parents: parents,
+      groupId,
+      groupName: actualGroupName,
+      eventId,
+      title,
+      time,
+      place,
+      comments,
+      date,
+      notificationBody
+    });
+
+    res.json({
+      success: true,
+      message: `Уведомления отправлены ${sendResults.successful} родителям`,
+      recipients: sendResults.successful,
+      totalParents: parents.length,
+      parentsWithTokens: sendResults.successful,
+      failed: sendResults.failed
+    });
 
   } catch (err) {
-    console.error("❌ Ошибка в sendEventNotifications:", err);
-    return { successful: 0, failed: parents.length };
+    performanceMetrics.errors++;
+
+    if (err.message.includes('timeout')) {
+      return res.status(408).json({
+        error: "Операция поиска родителей заняла слишком много времени"
+      });
+    }
+
+    console.error("❌ Ошибка отправки уведомления о событии:", err);
+    res.status(500).json({
+      error: "Внутренняя ошибка сервера: " + err.message
+    });
+  }
+});
+
+// Вспомогательные функции
+async function getGroupName(groupId) {
+  try {
+    const groupData = await getGroupWithCache(groupId);
+    return groupData?.name || `Группа ${groupId}`;
+  } catch (error) {
+    console.error("❌ Ошибка получения названия группы:", error);
+    return `Группа ${groupId}`;
   }
 }
 
-// 🔥 ОПТИМИЗИРОВАННЫЙ keep-alive
-const keepAliveOptimized = () => {
-  setInterval(async () => {
-    try {
-      const http = require('http');
-      const req = http.request({
-        hostname: process.env.RENDER_EXTERNAL_HOSTNAME,
-        port: 80,
-        path: '/health',
-        method: 'GET',
-        timeout: 2000
-      }, (res) => {
-        if (res.statusCode !== 200 && process.env.NODE_ENV === 'development') {
-          console.log('💓 Keep-alive status:', res.statusCode);
-        }
-      });
+function formatEventNotification(title, time, place, groupName) {
+  let notification = `📅 ${title}`;
+  if (time) notification += ` в ${time}`;
+  if (place) notification += ` (${place})`;
+  if (groupName) notification += ` • ${groupName}`;
+  return notification;
+}
 
-      req.on('error', () => {});
-      req.on('timeout', () => req.destroy());
-      req.end();
-    } catch (error) {
-      // Игнорируем ошибки keep-alive
-    }
-  }, 10 * 60 * 1000); // 10 минут
-};
+// ==================== HEALTH CHECKS И МОНИТОРИНГ ====================
 
-// === Health checks и мониторинг ===
 app.get("/health", (req, res) => {
   const memory = process.memoryUsage();
+  const cacheStats = quickCache.getStats();
+
   res.json({
     status: "OK",
     timestamp: Date.now(),
     memory: {
       rss: Math.round(memory.rss / 1024 / 1024) + "MB",
-      heap: Math.round(memory.heapUsed / 1024 / 1024) + "MB"
+      heap: Math.round(memory.heapUsed / 1024 / 1024) + "MB",
+      limit: Math.round(MEMORY_LIMIT / 1024 / 1024) + "MB"
     },
     uptime: Math.round(process.uptime()) + "s",
-    quickCacheSize: quickCache.size
+    cache: cacheStats,
+    performance: {
+      requests: performanceMetrics.requests,
+      errorRate: ((performanceMetrics.errors / Math.max(performanceMetrics.requests, 1)) * 100).toFixed(2) + '%'
+    }
   });
 });
 
@@ -1368,34 +1440,82 @@ app.get("/metrics", (req, res) => {
     slow_requests: performanceMetrics.slowRequests,
     memory: {
       rss: Math.round(process.memoryUsage().rss / 1024 / 1024) + 'MB',
-      heap: Math.round(process.memoryUsage().heapUsed / 1024 / 1024) + 'MB'
+      heap: Math.round(process.memoryUsage().heapUsed / 1024 / 1024) + 'MB',
+      external: Math.round(process.memoryUsage().external / 1024 / 1024) + 'MB'
     },
-    cache: {
-      quick_cache_size: quickCache.size
-    }
+    cache: quickCache.getStats(),
+    gc: global.gc ? 'available' : 'unavailable'
   });
+});
+
+app.get("/deep-health", async (req, res) => {
+  const checks = {
+    firebase: false,
+    s3: false,
+    memory: false,
+    cache: false
+  };
+
+  try {
+    const fbCheck = await withStrictTimeout(
+      db.ref('.info/connected').once('value'),
+      5000,
+      'Глубокий health check Firebase'
+    );
+    checks.firebase = true;
+
+    const s3Check = await withStrictTimeout(
+      s3.send(new PutObjectCommand({
+        Bucket: BUCKET_NAME,
+        Key: 'health-check',
+        Body: Buffer.from('health'),
+        ContentType: 'text/plain'
+      })),
+      10000,
+      'Глубокий health check S3'
+    );
+    checks.s3 = true;
+
+    checks.memory = process.memoryUsage().heapUsed < MEMORY_LIMIT * 0.8;
+    checks.cache = quickCache.cache.size < quickCache.maxSize;
+
+    const allHealthy = Object.values(checks).every(Boolean);
+    res.status(allHealthy ? 200 : 503).json({
+      status: allHealthy ? 'healthy' : 'degraded',
+      timestamp: Date.now(),
+      checks
+    });
+
+  } catch (error) {
+    res.status(503).json({
+      status: 'unhealthy',
+      timestamp: Date.now(),
+      checks,
+      error: error.message
+    });
+  }
 });
 
 app.get("/info", (req, res) => {
   res.json({
     service: "Firebase Admin Notification Server",
-    version: "1.0.0",
+    version: "2.0.0-optimized",
+    optimization: {
+      lru_cache: "implemented",
+      retry_logic: "implemented",
+      parallel_notifications: "implemented",
+      increased_timeouts: "implemented",
+      memory_optimized: "implemented"
+    },
     endpoints: {
       "POST /send-event-notification": "Отправка уведомлений о новых событиях",
       "GET /health": "Проверка работоспособности сервера",
+      "GET /deep-health": "Глубокий health check с проверкой зависимостей",
       "GET /info": "Информация о сервере",
       "GET /ping": "Пинг с диагностикой",
       "GET /stress-test": "Тест нагрузки",
       "GET /metrics": "Метрики производительности"
-    },
-    features: [
-      "Отправка FCM уведомлений о событиях",
-      "Автоматическое удаление невалидных токенов",
-      "Оптимизированный поиск родителей",
-      "Кэширование Firebase запросов",
-      "Строгие таймауты для всех операций",
-      "Мониторинг памяти и производительности"
-    ]
+    }
   });
 });
 
@@ -1408,7 +1528,7 @@ app.get("/ping", async (req, res) => {
     await withStrictTimeout(
       db.ref('.info/connected').once('value'),
       3000,
-      'Firebase ping'
+      'Пинг Firebase'
     );
     diagnostics.firebase = `${Date.now() - fbStart}ms`;
     diagnostics.total = `${Date.now() - start}ms`;
@@ -1421,7 +1541,7 @@ app.get("/ping", async (req, res) => {
 
   } catch (error) {
     res.status(500).json({
-      error: "Diagnostics failed",
+      error: "Диагностика не удалась",
       message: error.message
     });
   }
@@ -1437,7 +1557,7 @@ app.get("/stress-test", async (req, res) => {
     await withStrictTimeout(
       db.ref('.info/connected').once('value'),
       3000,
-      'Firebase stress test'
+      'Стресс-тест Firebase'
     );
     tests.push({ name: "firebase_connect", time: `${Date.now() - fbStart}ms` });
   } catch (error) {
@@ -1462,7 +1582,7 @@ app.get("/stress-test", async (req, res) => {
     performance: {
       uptime: Math.round(process.uptime()) + "s",
       event_loop_lag: `${eventLoopLag}ms`,
-      quick_cache_size: quickCache.size
+      quick_cache_size: quickCache.cache.size
     },
     tests
   });
@@ -1470,14 +1590,14 @@ app.get("/stress-test", async (req, res) => {
 
 app.get("/", (req, res) => {
   res.json({
-    message: "Firebase Admin Server is running (OPTIMIZED)",
+    message: "Firebase Admin Server работает (ОПТИМИЗИРОВАННАЯ ВЕРСИЯ)",
     timestamp: Date.now(),
     endpoints: [
-      "/health - Health check",
-      "/info - Server information",
-      "/ping - Ping with diagnostics",
-      "/stress-test - Load test",
-      "/metrics - Performance metrics"
+      "/health - Проверка здоровья",
+      "/info - Информация о сервере",
+      "/ping - Пинг с диагностикой",
+      "/stress-test - Тест нагрузки",
+      "/metrics - Метрики производительности"
     ]
   });
 });
@@ -1485,45 +1605,73 @@ app.get("/", (req, res) => {
 const PORT = process.env.PORT || 3000;
 
 const server = app.listen(PORT, '0.0.0.0', () => {
-  console.log(`✅ Server started on port ${PORT} (OPTIMIZED VERSION)`);
-  console.log(`✅ Memory limit: ${MEMORY_LIMIT / 1024 / 1024}MB`);
-  console.log(`✅ Cache limit: ${CACHE_LIMIT} entries`);
-  console.log(`✅ Firebase timeout: ${FIREBASE_TIMEOUT}ms`);
-  console.log(`✅ S3 timeout: ${S3_TIMEOUT}ms`);
-  keepAliveOptimized();
+  console.log(`✅ Сервер запущен на порту ${PORT} (ОПТИМИЗИРОВАННАЯ ВЕРСИЯ 2.0)`);
+  console.log(`✅ Лимит памяти: ${MEMORY_LIMIT / 1024 / 1024}MB (УВЕЛИЧЕНО)`);
+  console.log(`✅ Лимит кэша: ${quickCache.maxSize} записей (УВЕЛИЧЕНО)`);
+  console.log(`✅ Таймаут Firebase: ${FIREBASE_TIMEOUT}мс (УВЕЛИЧЕНО)`);
+  console.log(`✅ Таймаут S3: ${S3_TIMEOUT}мс (УВЕЛИЧЕНО)`);
+  console.log(`✅ Попытки повтора: ${RETRY_ATTEMPTS} (НОВОЕ)`);
+  console.log(`✅ Параллельные уведомления: включено (НОВОЕ)`);
+
+  setInterval(() => {
+    require('http').get(`http://localhost:${PORT}/health`, () => {}).on('error', () => {});
+  }, 600000);
 });
 
-// Graceful shutdown
 server.keepAliveTimeout = 60000;
 server.headersTimeout = 65000;
 
 process.on('SIGTERM', () => {
-  console.log('🔄 SIGTERM received, shutting down gracefully');
+  console.log('🔄 Получен SIGTERM, плавное завершение работы');
+  console.log('📊 Финальная статистика кэша:', quickCache.getStats());
+
   server.close(() => {
-    console.log('✅ HTTP server closed');
+    console.log('✅ HTTP сервер закрыт');
     process.exit(0);
   });
 
   setTimeout(() => {
-    console.log('⚠️ Forcing shutdown');
+    console.log('⚠️ Принудительное завершение');
     process.exit(1);
   }, 10000);
 });
 
-// 🔥 Emergency memory handler
 process.on('warning', (warning) => {
   if (warning.name === 'MaxListenersExceededWarning' ||
       warning.message.includes('memory')) {
-    console.error('🚨 EMERGENCY: Memory warning detected');
+    console.error('🚨 АВАРИЙНЫЙ РЕЖИМ: Обнаружено предупреждение памяти', warning.message);
 
     if (!emergencyMode) {
       emergencyMode = true;
-      quickCache.clear();
-      if (global.gc) global.gc();
+
+      const currentSize = quickCache.cache.size;
+      const targetSize = Math.floor(quickCache.maxSize * 0.3);
+
+      let deleted = 0;
+      for (let [key] of quickCache.cache.entries()) {
+        if (deleted >= currentSize - targetSize) break;
+        quickCache.cache.delete(key);
+        deleted++;
+      }
+
+      console.log(`🚨 Аварийная очистка кэша: удалено ${deleted} записей`);
+
+      if (global.gc) {
+        global.gc();
+        console.log('🚨 Аварийный сбор мусора выполнен');
+      }
 
       setTimeout(() => {
         emergencyMode = false;
-      }, 60000);
+        console.log('🚨 Аварийный режим деактивирован');
+      }, 120000);
     }
   }
 });
+
+console.log('🚀 Оптимизация сервера завершена:');
+console.log('   • LRU Кэш реализован');
+console.log('   • Логика повтора с exponential backoff');
+console.log('   • Параллельная отправка уведомлений');
+console.log('   • Увеличенные таймауты и лимиты памяти');
+console.log('   • Оптимизированный алгоритм поиска родителей');
