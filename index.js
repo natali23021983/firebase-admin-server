@@ -1,5 +1,6 @@
 // ==================== НОВОЕ: Оптимизации пула потоков и памяти ====================
 require('dotenv').config();
+
 // Включим подробное логирование
 process.on('uncaughtException', (error) => {
   console.error('🔥 КРИТИЧЕСКАЯ ОШИБКА:', error);
@@ -11,6 +12,7 @@ process.on('unhandledRejection', (reason, promise) => {
   console.error('🔥 НЕОБРАБОТАННЫЙ ПРОМИС:', reason);
   console.error('🔥 Стек:', reason?.stack);
 });
+
 // Увеличиваем лимиты Node.js для высоких нагрузок
 const os = require('os');
 const THREAD_POOL_SIZE = process.env.UV_THREADPOOL_SIZE || 128;
@@ -56,6 +58,7 @@ class OptimizedLRUCache {
   get(key) {
     if (!this.cache.has(key)) {
       this.stats.misses++;
+      performanceMetrics.cacheMisses++; // ← ДОБАВЬТЕ ЭТУ СТРОКУ
       return null;
     }
 
@@ -63,6 +66,7 @@ class OptimizedLRUCache {
     this.cache.delete(key);
     this.cache.set(key, value);
     this.stats.hits++;
+    performanceMetrics.cacheHits++; // ← ДОБАВЬТЕ ЭТУ СТРОКУ
 
     return value.data;
   }
@@ -153,7 +157,19 @@ class OptimizedLRUCache {
 }
 
 // ==================== ИНИЦИАЛИЗАЦИЯ ОПТИМИЗИРОВАННОГО КЭША ====================
-const quickCache = new OptimizedLRUCache(2000, 800); // УВЕЛИЧЕНО: было 1000, 500
+const quickCache = new OptimizedLRUCache(2000, 800);
+console.log('🔍 Кэш инициализирован:', {
+  maxSize: quickCache.maxSize,
+  maxMemory: quickCache.maxMemoryBytes + ' bytes'
+});
+
+// Мониторинг кэша каждые 30 секунд
+setInterval(() => {
+  const stats = quickCache.getStats();
+  if (stats.size > 0 || performanceMetrics.requests > 100) {
+    console.log('📊 Статистика кэша:', stats);
+  }
+}, 30000);
 
 // ==================== ОПТИМИЗАЦИЯ №2: УВЕЛИЧЕННЫЕ ТАЙМАУТЫ И RETRY ЛОГИКА ====================
 const FIREBASE_TIMEOUT = 20000; // УВЕЛИЧЕНО: было 15000
@@ -422,19 +438,23 @@ async function getGroupWithCache(groupId) {
   const cached = quickCache.get(cacheKey);
 
   if (cached) {
+    console.log(`✅ Кэш попадание для группы: ${groupId}`);
     return cached;
   }
+
+  console.log(`❌ Кэш промах для группы: ${groupId}`);
 
   try {
     const groupSnap = await withRetry(
       () => db.ref(`groups/${groupId}`).once('value'),
       `Получение группы ${groupId} из Firebase`,
-      10000 // УМЕНЬШЕНО: было FIREBASE_TIMEOUT
+      10000
     );
     const groupData = groupSnap.val();
 
     if (groupData) {
-      quickCache.set(cacheKey, groupData, 600000); // УВЕЛИЧЕНО: было 300000 (10 минут)
+      quickCache.set(cacheKey, groupData, 600000);
+      console.log(`💾 Группа ${groupId} сохранена в кэш`);
     }
 
     return groupData;
