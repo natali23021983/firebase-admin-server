@@ -329,22 +329,14 @@ try {
 const db = admin.database();
 const auth = admin.auth();
 
-// === Яндекс S3 ===
+// ==================== ОПТИМИЗАЦИЯ AWS SDK ====================
 const s3 = new S3Client({
   region: process.env.YC_S3_REGION || "ru-central1",
   endpoint: process.env.YC_S3_ENDPOINT || "https://storage.yandexcloud.net",
   credentials: {
     accessKeyId: process.env.YC_ACCESS_KEY,
     secretAccessKey: process.env.YC_SECRET_KEY,
-  },
-  // ==================== НОВОЕ: Оптимизированный обработчик запросов ====================
-  requestHandler: new NodeHttpHandler({
-    connectionTimeout: 45000,
-    socketTimeout: 45000,
-    requestTimeout: 45000,
-    maxSockets: 256,
-    maxFreeSockets: 64
-  })
+  }
 });
 
 const BUCKET_NAME = process.env.YC_S3_BUCKET;
