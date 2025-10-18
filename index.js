@@ -13,6 +13,16 @@ process.on('unhandledRejection', (reason, promise) => {
   console.error('🔥 Стек:', reason?.stack);
 });
 
+process.on('SIGTERM', () => {
+  console.log('🔄 Получен SIGTERM, завершаем работу...');
+  process.exit(0);
+});
+
+process.on('SIGINT', () => {
+  console.log('🔄 Получен SIGINT (Ctrl+C), завершаем работу...');
+  process.exit(0);
+});
+
 // 🔥 ОПТИМИЗАЦИЯ ПУЛА ПОТОКОВ NODE.JS
 const os = require('os');
 const THREAD_POOL_SIZE = process.env.UV_THREADPOOL_SIZE || 128;
@@ -497,7 +507,7 @@ async function getUserWithCache(userId) {
     const userData = userSnap.val();
 
     if (userData) {
-      quickCache.set(cacheKey, userData, 600000, 'high');
+      quickCache.set(cacheKey, userData, 1800000, 'high');
       if (process.env.NODE_ENV === 'development') {
         console.log(`💾 Пользователь ${userId} сохранен в кэш`);
       }
@@ -534,7 +544,7 @@ async function getNewsWithCache(groupId) {
     );
     const newsData = newsSnap.val() || {};
 
-    quickCache.set(cacheKey, newsData, 300000, 'medium');
+    quickCache.set(cacheKey, newsData, 900000, 'medium');
     if (process.env.NODE_ENV === 'development') {
       console.log(`💾 Новости группы ${groupId} сохранены в кэш`);
     }
@@ -563,7 +573,7 @@ async function getGroupsStructureWithCache() {
     );
     const groupsData = groupsSnap.val() || {};
 
-    quickCache.set(cacheKey, groupsData, 900000, 'medium');
+    quickCache.set(cacheKey, groupsData, 3600000, 'medium');
     if (process.env.NODE_ENV === 'development') {
       console.log('💾 Структура групп сохранена в кэш');
     }
@@ -2250,7 +2260,7 @@ const MAX_CONSECUTIVE_FAILURES = 10;
 // ИСПРАВЛЕНИЕ 6: Улучшенная функция авто-пинга для Render.com
 function enhancedKeepAlivePing() {
   const baseUrl = process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`;
-  const pingUrl = `${baseUrl}/light-ping`;
+  const pingUrl = `${baseUrl}/ping`;
   const startTime = Date.now();
 
   const protocol = pingUrl.startsWith('https') ? require('https') : require('http');
@@ -2337,6 +2347,9 @@ const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`✅ Авто-пинг: каждые ${KEEP_ALIVE_INTERVAL / 60000} минут`);
 
   startKeepAliveSystem();
+
+  console.log('🚀 Запуск предзагрузки критических данных...');
+  setTimeout(preloadCriticalData, 10000);
 
   setTimeout(() => {
     require('http').get(`http://localhost:${PORT}/deep-health`, (res) => {
@@ -2425,6 +2438,26 @@ process.on('warning', (warning) => {
     }
   }
 });
+
+// 🔥 Функция предзагрузки критических данных
+async function preloadCriticalData() {
+  console.log('🔥 Предзагрузка критических данных в кэш...');
+  try {
+    await getGroupsStructureWithCache();
+    console.log('✅ Критические данные загружены в кэш');
+
+    // Дополнительная предзагрузка часто используемых данных
+    const stats = quickCache.getStats();
+    console.log('📊 Статус кэша после предзагрузки:', {
+      size: stats.size,
+      memoryUsage: stats.memoryUsage,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.log('⚠️ Предзагрузка данных пропущена:', error.message);
+  }
+}
+
 
 console.log('🚀 УЛУЧШЕННАЯ ОПТИМИЗАЦИЯ КЭШИРОВАНИЯ ЗАВЕРШЕНА:');
 console.log('   • LRU Кэш с глобальным persistence');
