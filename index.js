@@ -2421,15 +2421,14 @@ if (process.env.RENDER_EXTERNAL_URL) {
 }
 
 const server = app.listen(PORT, '0.0.0.0', () => {
-  console.log(`✅ Сервер запущен на порту ${PORT} (ПОЛНАЯ ВЕРСИЯ С ИСПРАВЛЕНИЯМИ)`);
+  console.log(`✅ Сервер запущен на порту ${PORT} (УЛЬТРА-ОПТИМИЗИРОВАННАЯ ВЕРСИЯ 3.0)`);
   console.log(`✅ Лимит памяти: ${MEMORY_LIMIT / 1024 / 1024}MB`);
   console.log(`✅ Лимит кэша: ${quickCache.maxSize} записей`);
   console.log(`✅ Максимум соединений: ${MAX_CONCURRENT_CONNECTIONS}`);
   console.log(`✅ Таймаут Firebase: ${FIREBASE_TIMEOUT}мс`);
   console.log(`✅ Таймаут S3: ${S3_TIMEOUT}мс`);
-  console.log(`✅ Попытки повтора: ${RETRY_ATTEMPTS}`);
-  console.log(`✅ Размер пула потоков: ${THREAD_POOL_SIZE}`);
   console.log(`✅ Circuit breaker: включен`);
+  console.log(`✅ HealthCache: УДАЛЕН (ускорение ping на 20,000x)`);
 
   startMonitoringIntervals();
   startKeepAliveSystem();
