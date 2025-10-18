@@ -1104,7 +1104,6 @@ app.post("/deleteNews", verifyToken, async (req, res) => {
     );
     const data = snap.val();
     if (!data) return res.status(404).json({ error: "Новость не найдена" });
-
     if (data.authorId !== authorId) return res.status(403).json({ error: "Нет прав" });
 
     const urls = data.mediaUrls || [];
@@ -1777,6 +1776,53 @@ function formatEventNotification(title, time, place, groupName) {
   return notification;
 }
 
+// ==================== НОВЫЕ ЭНДПОИНТЫ ДЛЯ OPTIMIZATION ====================
+// ИСПРАВЛЕНИЕ 1: Добавлен эндпоинт для разогрева кэша
+app.post("/warmup-cache", async (req, res) => {
+  try {
+    console.log('🔥 Разогрев кэша...');
+
+    // Принудительно кэшируем основные данные
+    const startTime = Date.now();
+
+    await Promise.allSettled([
+      getGroupsStructureWithCache(),
+      // Добавьте другие важные данные для кэширования
+    ]);
+
+    const duration = Date.now() - startTime;
+
+    res.json({
+      success: true,
+      message: "Кэш разогрет",
+      duration: `${duration}ms`,
+      stats: quickCache.getStats()
+    });
+  } catch (error) {
+    console.error('❌ Ошибка разогрева кэша:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      stats: quickCache.getStats()
+    });
+  }
+});
+
+// ИСПРАВЛЕНИЕ 2: Добавлен эндпоинт для проверки окружения
+app.get("/environment", (req, res) => {
+  res.json({
+    node_env: process.env.NODE_ENV,
+    port: process.env.PORT,
+    render_external_url: process.env.RENDER_EXTERNAL_URL,
+    render: process.env.RENDER ? 'true' : 'false',
+    memory_limit: MEMORY_LIMIT / 1024 / 1024 + 'MB',
+    thread_pool: THREAD_POOL_SIZE,
+    firebase_initialized: !!admin.apps.length,
+    s3_configured: !!(process.env.YC_ACCESS_KEY && process.env.YC_SECRET_KEY),
+    timestamp: new Date().toISOString()
+  });
+});
+
 // ==================== HEALTH CHECKS И МОНИТОРИНГ ====================
 
 app.get("/health", (req, res) => {
@@ -2001,7 +2047,9 @@ app.get("/info", (req, res) => {
       "POST /send-message": "Сообщения с кэшированием пользователей",
       "GET /health": "Упрощенная проверка работоспособности",
       "GET /deep-health": "Глубокий health check",
-      "GET /info": "Информация о сервере и кэше"
+      "GET /info": "Информация о сервере и кэше",
+      "POST /warmup-cache": "Разогрев кэша",
+      "GET /environment": "Информация об окружении"
     }
   });
 });
@@ -2123,41 +2171,74 @@ app.get("/", (req, res) => {
       "/info - Информация о сервере и кэше",
       "/ping - Пинг с диагностикой",
       "/stress-test - Тест нагрузки",
-      "/metrics - Метрики производительности"
+      "/metrics - Метрики производительности",
+      "/warmup-cache - Разогрев кэша",
+      "/environment - Информация об окружении"
     ]
   });
 });
 
-// ==================== МОНИТОРИНГ КЭША ====================
+// ==================== ИСПРАВЛЕНИЕ 3: УЛУЧШЕННЫЙ МОНИТОРИНГ КЭША ====================
 
+// ИСПРАВЛЕНИЕ 4: Добавлено тестирование кэша при запуске
+setTimeout(() => {
+  console.log('🧪 Тестирование кэширования...');
+
+  // Тестовые данные для кэша
+  const testData = {
+    test: 'data',
+    timestamp: Date.now()
+  };
+
+  quickCache.set('test_key', testData, 30000, 'high');
+  const retrieved = quickCache.get('test_key');
+
+  if (retrieved) {
+    console.log('✅ Тест кэша пройден успешно');
+  } else {
+    console.log('❌ Тест кэша не пройден');
+  }
+}, 5000);
+
+// ИСПРАВЛЕНИЕ 5: Улучшенный мониторинг кэша
 setInterval(() => {
   const stats = quickCache.getStats();
   const hitRate = parseFloat(stats.hitRate);
 
-  if (stats.size > 0 || stats.hits > 0 || stats.misses > 0 || hitRate < 30) {
-    console.log('📊 Статистика кэша:', {
-      size: stats.size,
-      hits: stats.hits,
-      misses: stats.misses,
-      hitRate: stats.hitRate,
-      evictions: stats.evictions,
-      memoryUsage: stats.memoryUsage
-    });
+  // Всегда логируем статистику для отладки на Render
+  console.log('📊 Статистика кэша:', {
+    size: stats.size,
+    hits: stats.hits,
+    misses: stats.misses,
+    hitRate: stats.hitRate,
+    evictions: stats.evictions,
+    memoryUsage: stats.memoryUsage,
+    timestamp: new Date().toISOString()
+  });
 
-    if (stats.hits + stats.misses > 10) {
-      if (hitRate < 20) {
-        console.warn('🚨 КРИТИЧЕСКИ НИЗКИЙ HIT RATE КЭША:', stats.hitRate);
-        console.warn('💡 Рекомендация: проверьте TTL и стратегию кэширования');
-      } else if (hitRate < 40) {
-        console.warn('⚠️ НИЗКИЙ HIT RATE КЭША:', stats.hitRate);
+  // Анализ эффективности кэша
+  if (stats.hits + stats.misses > 10) {
+    if (hitRate < 20) {
+      console.warn('🚨 КРИТИЧЕСКИ НИЗКИЙ HIT RATE КЭША:', stats.hitRate);
+      console.warn('💡 Рекомендация: проверьте TTL и стратегию кэширования');
+
+      // Автоматическая оптимизация при низком hit rate
+      if (stats.size > 100) {
+        console.log('🔄 Автоматическая оптимизация кэша...');
+        quickCache.cleanup();
       }
-    }
-
-    if (stats.size > quickCache.maxSize * 0.9) {
-      console.warn('⚠️ Кэш близок к переполнению:', `${stats.size}/${quickCache.maxSize}`);
+    } else if (hitRate < 40) {
+      console.warn('⚠️ НИЗКИЙ HIT RATE КЭША:', stats.hitRate);
+    } else if (hitRate > 80) {
+      console.log('🎉 ВЫСОКИЙ HIT RATE КЭША:', stats.hitRate);
     }
   }
-}, 45000);
+
+  if (stats.size > quickCache.maxSize * 0.9) {
+    console.warn('⚠️ Кэш близок к переполнению:', `${stats.size}/${quickCache.maxSize}`);
+    quickCache.cleanup();
+  }
+}, 30000); // Уменьшите интервал для лучшей отладки
 
 // ==================== АВТО-ПИНГ СИСТЕМА ====================
 
@@ -2166,6 +2247,7 @@ let keepAliveInterval = null;
 let consecutiveFailures = 0;
 const MAX_CONSECUTIVE_FAILURES = 10;
 
+// ИСПРАВЛЕНИЕ 6: Улучшенная функция авто-пинга для Render.com
 function enhancedKeepAlivePing() {
   const baseUrl = process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`;
   const pingUrl = `${baseUrl}/light-ping`;
@@ -2204,7 +2286,14 @@ function enhancedKeepAlivePing() {
   }
 }
 
+// ИСПРАВЛЕНИЕ 7: Улучшенная система авто-пинга с проверкой окружения
 function startKeepAliveSystem() {
+  // Не запускаем авто-пинг в production на Render (они сами пингуют)
+  if (process.env.NODE_ENV === 'production' && process.env.RENDER_EXTERNAL_URL) {
+    console.log('🔔 Авто-пинг отключен в production на Render.com');
+    return;
+  }
+
   if (keepAliveInterval) {
     clearInterval(keepAliveInterval);
   }
@@ -2226,7 +2315,15 @@ function stopKeepAliveSystem() {
 
 // ==================== ЗАПУСК СЕРВЕРА ====================
 
-const PORT = process.env.PORT || 3000;
+// ИСПРАВЛЕНИЕ 8: Исправлен порт для Render.com
+const PORT = process.env.PORT || 10000; // Render.com использует порт 10000
+
+// ИСПРАВЛЕНИЕ 9: Специальная обработка для Render.com
+if (process.env.RENDER_EXTERNAL_URL) {
+  console.log('🚀 Запуск на Render.com обнаружен');
+  console.log(`🌐 External URL: ${process.env.RENDER_EXTERNAL_URL}`);
+  console.log(`🔧 Port: ${process.env.PORT}`);
+}
 
 const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`✅ Сервер запущен на порту ${PORT} (ОПТИМИЗИРОВАННАЯ ВЕРСИЯ 2.0 С КЭШИРОВАНИЕМ)`);
@@ -2262,22 +2359,48 @@ const server = app.listen(PORT, '0.0.0.0', () => {
 server.keepAliveTimeout = 60000;
 server.headersTimeout = 65000;
 
-process.on('SIGTERM', () => {
-  console.log('🔄 Получен SIGTERM, плавное завершение работы');
-  console.log('📊 Финальная статистика кэша:', quickCache.getStats());
+// ИСПРАВЛЕНИЕ 10: Улучшенный graceful shutdown
+function gracefulShutdown() {
+  console.log('🔄 Начало плавного завершения работы...');
 
   stopKeepAliveSystem();
 
+  // Сохраняем финальную статистику
+  console.log('📊 Финальная статистика кэша:', quickCache.getStats());
+  console.log('📊 Финальная статистика health кэша:', healthCache.getStats());
+
+  // Очищаем кэш
+  quickCache.destroy();
+  healthCache.destroy();
+
   server.close(() => {
     console.log('✅ HTTP сервер закрыт');
-    process.exit(0);
+
+    // Закрываем Firebase соединения
+    if (admin.apps.length) {
+      Promise.all(admin.apps.map(app => app.delete()))
+        .then(() => {
+          console.log('✅ Firebase соединения закрыты');
+          process.exit(0);
+        })
+        .catch(err => {
+          console.error('❌ Ошибка закрытия Firebase:', err);
+          process.exit(1);
+        });
+    } else {
+      process.exit(0);
+    }
   });
 
+  // Принудительное завершение через 8 секунд
   setTimeout(() => {
     console.log('⚠️ Принудительное завершение');
     process.exit(1);
-  }, 10000);
-});
+  }, 8000);
+}
+
+process.on('SIGTERM', gracefulShutdown);
+process.on('SIGINT', gracefulShutdown);
 
 process.on('warning', (warning) => {
   if (warning.name === 'MaxListenersExceededWarning' ||
@@ -2311,3 +2434,4 @@ console.log('   • Реализовано кэширование пользов
 console.log('   • Добавлен быстрый кэш для health checks');
 console.log('   • Улучшен мониторинг и статистика кэша');
 console.log('   • ВСЕ эндпоинты сохранены и оптимизированы');
+console.log('   • ДОБАВЛЕНЫ НОВЫЕ ФИЧИ ДЛЯ RENDER.COM');
