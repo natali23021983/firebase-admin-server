@@ -1,6 +1,11 @@
 // ==================== ОПТИМИЗИРОВАННАЯ КОНФИГУРАЦИЯ И ИНИЦИАЛИЗАЦИЯ ====================
 require('dotenv').config();
 
+// 🔥 ИЗМЕНЕНИЕ 1: КОНФИГУРАЦИЯ ДЛЯ RENDER.COM
+if (process.env.RENDER) {
+  console.log('🚀 Обнаружена среда Render.com - применяем оптимизации');
+}
+
 // 🔥 УЛУЧШЕННАЯ ОБРАБОТКА ОШИБОК
 process.on('uncaughtException', (error) => {
   console.error('🔥 КРИТИЧЕСКАЯ ОШИБКА:', error);
@@ -55,6 +60,7 @@ class OptimizedLRUCache {
       sets: 0
     };
 
+    // 🔥 ИЗМЕНЕНИЕ 2: Сохраняем ссылку на интервал для очистки
     this.cleanupInterval = setInterval(() => {
       try {
         this.cleanup();
@@ -62,6 +68,11 @@ class OptimizedLRUCache {
         console.error('❌ Ошибка в cleanup:', error);
       }
     }, 60000);
+
+    // 🔥 ИЗМЕНЕНИЕ 3: Автоочистка старых записей каждые 5 минут
+    this.aggressiveCleanupInterval = setInterval(() => {
+      this.aggressiveCleanup();
+    }, 300000);
 
     console.log(`✅ Кэш инициализирован: maxSize=${maxSize}, maxMemory=${maxMemoryMB}MB`);
   }
@@ -184,6 +195,39 @@ class OptimizedLRUCache {
     }
   }
 
+  // 🔥 ИЗМЕНЕНИЕ 4: НОВЫЙ МЕТОД - Агрессивная очистка старых записей
+  aggressiveCleanup() {
+    try {
+      const now = Date.now();
+      let cleaned = 0;
+      const keysToDelete = [];
+
+      for (let [key, value] of this.cache.entries()) {
+        // Удаляем записи старше 1 часа ВНЕ ЗАВИСИМОСТИ от TTL
+        if (now - value.timestamp > 3600000) {
+          keysToDelete.push(key);
+          cleaned++;
+        }
+      }
+
+      keysToDelete.forEach(key => this.cache.delete(key));
+
+      if (cleaned > 0) {
+        console.log(`🧹 Агрессивная очистка: удалено ${cleaned} старых записей`);
+      }
+
+      // Принудительный сбор мусора если доступен
+      if (global.gc && this.cache.size > this.maxSize * 0.7) {
+        global.gc();
+      }
+
+      return cleaned;
+    } catch (error) {
+      console.error('❌ Ошибка агрессивной очистки:', error);
+      return 0;
+    }
+  }
+
   getStats() {
     const total = this.stats.hits + this.stats.misses;
     return {
@@ -259,10 +303,15 @@ class OptimizedLRUCache {
     }
   }
 
+  // 🔥 ИЗМЕНЕНИЕ 5: ОБНОВЛЕННЫЙ МЕТОД destroy
   destroy() {
     if (this.cleanupInterval) {
       clearInterval(this.cleanupInterval);
       this.cleanupInterval = null;
+    }
+    if (this.aggressiveCleanupInterval) {
+      clearInterval(this.aggressiveCleanupInterval);
+      this.aggressiveCleanupInterval = null;
     }
   }
 }
@@ -294,7 +343,19 @@ const S3_TIMEOUT = 60000;
 const RETRY_ATTEMPTS = 3;
 const RETRY_BASE_DELAY = 1000;
 
+// 🔥 ИЗМЕНЕНИЕ 6: Глобальные счетчики соединений
+const connectionCounters = {
+  firebase: 0,
+  s3: 0,
+  http: 0
+};
+
+// 🔥 ИЗМЕНЕНИЕ 7: ОБНОВЛЕННЫЙ withRetry для отслеживания соединений
 const withRetry = async (operation, operationName = 'Operation', timeoutMs = FIREBASE_TIMEOUT, maxRetries = RETRY_ATTEMPTS) => {
+  const counterType = operationName.includes('Firebase') ? 'firebase' :
+                     operationName.includes('S3') ? 's3' : 'http';
+  connectionCounters[counterType]++;
+
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
       const result = await Promise.race([
@@ -305,9 +366,13 @@ const withRetry = async (operation, operationName = 'Operation', timeoutMs = FIR
           }, timeoutMs)
         )
       ]);
+      connectionCounters[counterType]--;
       return result;
     } catch (error) {
-      if (attempt === maxRetries) throw error;
+      if (attempt === maxRetries) {
+        connectionCounters[counterType]--;
+        throw error;
+      }
 
       const delay = RETRY_BASE_DELAY * Math.pow(2, attempt - 1);
       console.warn(`🔄 Повтор ${attempt}/${maxRetries} для ${operationName} через ${delay}мс:`, error.message);
@@ -320,50 +385,117 @@ const withStrictTimeout = (promise, timeoutMs, operationName = 'Operation') => {
   return withRetry(() => promise, operationName, timeoutMs, 1);
 };
 
-// ==================== МОНИТОРИНГ ПАМЯТИ ====================
+// ==================== ИСПРАВЛЕННЫЙ МОНИТОРИНГ ПАМЯТИ ====================
 const MEMORY_LIMIT = 800 * 1024 * 1024;
 let emergencyMode = false;
 
-setInterval(() => {
-  const memory = process.memoryUsage();
-  const heapUsedMB = Math.round(memory.heapUsed / 1024 / 1024);
-  const memoryLimitMB = MEMORY_LIMIT / 1024 / 1024;
-  const cacheStats = quickCache.getStats();
+// 🔥 ИЗМЕНЕНИЕ 8: УПРАВЛЯЕМЫЕ ИНТЕРВАЛЫ МОНИТОРИНГА
+let memoryMonitorInterval = null;
+let cacheStatsInterval = null;
+let memoryLeakMonitorInterval = null;
 
-  if (heapUsedMB > memoryLimitMB * 0.75) {
-    console.warn('🚨 ВЫСОКАЯ ЗАГРУЗКА ПАМЯТИ:', {
-      используется: heapUsedMB + 'MB',
-      всего: Math.round(memory.heapTotal / 1024 / 1024) + 'MB',
-      лимит: memoryLimitMB + 'MB',
-      размерКэша: cacheStats.size + ' записей',
-      памятьКэша: cacheStats.memoryUsage
-    });
+function startMonitoringIntervals() {
+  // Очищаем существующие интервалы
+  stopMonitoringIntervals();
 
-    const now = Date.now();
-    let cleanedCount = 0;
+  // Мониторинг памяти с ограничением
+  memoryMonitorInterval = setInterval(() => {
+    const memory = process.memoryUsage();
+    const heapUsedMB = Math.round(memory.heapUsed / 1024 / 1024);
+    const memoryLimitMB = MEMORY_LIMIT / 1024 / 1024;
+    const cacheStats = quickCache.getStats();
 
-    for (let [key, value] of quickCache.cache.entries()) {
-      if (value.priority === 'low' && (now - value.timestamp > 30000)) {
-        quickCache.cache.delete(key);
-        cleanedCount++;
+    if (heapUsedMB > memoryLimitMB * 0.75) {
+      console.warn('🚨 ВЫСОКАЯ ЗАГРУЗКА ПАМЯТИ:', {
+        используется: heapUsedMB + 'MB',
+        всего: Math.round(memory.heapTotal / 1024 / 1024) + 'MB',
+        лимит: memoryLimitMB + 'MB',
+        размерКэша: cacheStats.size + ' записей',
+        памятьКэша: cacheStats.memoryUsage
+      });
+
+      const now = Date.now();
+      let cleanedCount = 0;
+
+      for (let [key, value] of quickCache.cache.entries()) {
+        if (value.priority === 'low' && (now - value.timestamp > 30000)) {
+          quickCache.cache.delete(key);
+          cleanedCount++;
+        }
+      }
+
+      console.log(`🧹 Очистка памяти: удалено ${cleanedCount} low-priority записей кэша`);
+
+      if (global.gc) {
+        global.gc();
+        console.log('🔄 Сборка мусора выполнена');
       }
     }
+  }, 30000); // Увеличили интервал до 30 секунд
 
-    console.log(`🧹 Очистка памяти: удалено ${cleanedCount} low-priority записей кэша`);
-
-    if (global.gc) {
-      global.gc();
-      console.log('🔄 Сборка мусора выполнена');
-    }
-  }
-
-  if (Date.now() % 30000 < 1000) {
+  // Статистика кэша с ограничением
+  cacheStatsInterval = setInterval(() => {
     const stats = quickCache.getStats();
-    if (stats.size > 0 || stats.hits > 0 || stats.misses > 0) {
+
+    // 🔥 ОГРАНИЧИВАЕМ логирование - только если есть активность
+    if (stats.size > 0 || stats.hits > 10 || stats.misses > 10) {
       console.log('📊 Статистика кэша:', stats);
     }
+
+    // 🔥 АВТОМАТИЧЕСКАЯ ОПТИМИЗАЦИЯ ПРИ НИЗКОМ HIT RATE
+    const hitRate = parseFloat(stats.hitRate);
+    if (stats.hits + stats.misses > 50 && hitRate < 20) {
+      console.warn('🚨 НИЗКИЙ HIT RATE - выполняем оптимизацию кэша');
+      quickCache.aggressiveCleanup();
+    }
+  }, 60000); // Увеличили интервал до 1 минуты
+
+  // 🔥 ИЗМЕНЕНИЕ 9: АГРЕССИВНЫЙ МОНИТОРИНГ УТЕЧЕК ПАМЯТИ
+  let lastMemoryUsage = process.memoryUsage().heapUsed;
+  let memoryLeakDetected = false;
+
+  memoryLeakMonitorInterval = setInterval(() => {
+    const currentMemory = process.memoryUsage();
+    const memoryGrowth = currentMemory.heapUsed - lastMemoryUsage;
+    const growthMB = Math.round(memoryGrowth / 1024 / 1024);
+
+    // Если память выросла более чем на 50MB за 30 секунд
+    if (growthMB > 50 && !memoryLeakDetected) {
+      memoryLeakDetected = true;
+      console.error(`🚨 ОБНАРУЖЕНА УТЕЧКА ПАМЯТИ: +${growthMB}MB за 30с`);
+
+      // Аварийная очистка
+      const cleaned = quickCache.emergencyCleanup();
+      console.log(`🚨 Аварийная очистка кэша: удалено ${cleaned} записей`);
+
+      if (global.gc) {
+        global.gc();
+        console.log('🚨 Аварийный сбор мусора');
+      }
+
+      // Сбрасываем флаг через 2 минуты
+      setTimeout(() => { memoryLeakDetected = false; }, 120000);
+    }
+
+    lastMemoryUsage = currentMemory.heapUsed;
+  }, 30000);
+}
+
+function stopMonitoringIntervals() {
+  if (memoryMonitorInterval) {
+    clearInterval(memoryMonitorInterval);
+    memoryMonitorInterval = null;
   }
-}, 20000);
+  if (cacheStatsInterval) {
+    clearInterval(cacheStatsInterval);
+    cacheStatsInterval = null;
+  }
+  if (memoryLeakMonitorInterval) {
+    clearInterval(memoryLeakMonitorInterval);
+    memoryLeakMonitorInterval = null;
+  }
+  console.log('✅ Интервалы мониторинга остановлены');
+}
 
 // ==================== ИНИЦИАЛИЗАЦИЯ EXPRESS И СЕРВИСОВ ====================
 const express = require('express');
@@ -1833,6 +1965,17 @@ app.get("/environment", (req, res) => {
   });
 });
 
+// 🔥 ИЗМЕНЕНИЕ 10: НОВЫЙ ЭНДПОИНТ ДЛЯ МОНИТОРИНГА СОЕДИНЕНИЙ
+app.get("/connection-stats", (req, res) => {
+  res.json({
+    connections: connectionCounters,
+    memory: process.memoryUsage(),
+    cacheSize: quickCache.cache.size,
+    uptime: Math.round(process.uptime()),
+    timestamp: Date.now()
+  });
+});
+
 // ==================== HEALTH CHECKS И МОНИТОРИНГ ====================
 
 app.get("/health", (req, res) => {
@@ -2059,7 +2202,8 @@ app.get("/info", (req, res) => {
       "GET /deep-health": "Глубокий health check",
       "GET /info": "Информация о сервере и кэше",
       "POST /warmup-cache": "Разогрев кэша",
-      "GET /environment": "Информация об окружении"
+      "GET /environment": "Информация об окружении",
+      "GET /connection-stats": "Мониторинг активных соединений"
     }
   });
 });
@@ -2183,7 +2327,8 @@ app.get("/", (req, res) => {
       "/stress-test - Тест нагрузки",
       "/metrics - Метрики производительности",
       "/warmup-cache - Разогрев кэша",
-      "/environment - Информация об окружении"
+      "/environment - Информация об окружении",
+      "/connection-stats - Мониторинг активных соединений"
     ]
   });
 });
@@ -2209,46 +2354,6 @@ setTimeout(() => {
     console.log('❌ Тест кэша не пройден');
   }
 }, 5000);
-
-// ИСПРАВЛЕНИЕ 5: Улучшенный мониторинг кэша
-setInterval(() => {
-  const stats = quickCache.getStats();
-  const hitRate = parseFloat(stats.hitRate);
-
-  // Всегда логируем статистику для отладки на Render
-  console.log('📊 Статистика кэша:', {
-    size: stats.size,
-    hits: stats.hits,
-    misses: stats.misses,
-    hitRate: stats.hitRate,
-    evictions: stats.evictions,
-    memoryUsage: stats.memoryUsage,
-    timestamp: new Date().toISOString()
-  });
-
-  // Анализ эффективности кэша
-  if (stats.hits + stats.misses > 10) {
-    if (hitRate < 20) {
-      console.warn('🚨 КРИТИЧЕСКИ НИЗКИЙ HIT RATE КЭША:', stats.hitRate);
-      console.warn('💡 Рекомендация: проверьте TTL и стратегию кэширования');
-
-      // Автоматическая оптимизация при низком hit rate
-      if (stats.size > 100) {
-        console.log('🔄 Автоматическая оптимизация кэша...');
-        quickCache.cleanup();
-      }
-    } else if (hitRate < 40) {
-      console.warn('⚠️ НИЗКИЙ HIT RATE КЭША:', stats.hitRate);
-    } else if (hitRate > 80) {
-      console.log('🎉 ВЫСОКИЙ HIT RATE КЭША:', stats.hitRate);
-    }
-  }
-
-  if (stats.size > quickCache.maxSize * 0.9) {
-    console.warn('⚠️ Кэш близок к переполнению:', `${stats.size}/${quickCache.maxSize}`);
-    quickCache.cleanup();
-  }
-}, 30000); // Уменьшите интервал для лучшей отладки
 
 // ==================== АВТО-ПИНГ СИСТЕМА ====================
 
@@ -2347,6 +2452,8 @@ const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`✅ Лимитер запросов: включен`);
   console.log(`✅ Авто-пинг: каждые ${KEEP_ALIVE_INTERVAL / 60000} минут`);
 
+  // 🔥 ИЗМЕНЕНИЕ 11: ЗАПУСК МОНИТОРИНГА ПРИ СТАРТЕ
+  startMonitoringIntervals();
   startKeepAliveSystem();
 
   console.log('🚀 Запуск предзагрузки критических данных...');
@@ -2373,15 +2480,17 @@ const server = app.listen(PORT, '0.0.0.0', () => {
 server.keepAliveTimeout = 60000;
 server.headersTimeout = 65000;
 
-// ИСПРАВЛЕНИЕ 10: Улучшенный graceful shutdown
+// 🔥 ИЗМЕНЕНИЕ 12: УЛУЧШЕННЫЙ GRACEFUL SHUTDOWN
 function gracefulShutdown() {
   console.log('🔄 Начало плавного завершения работы...');
 
   stopKeepAliveSystem();
+  stopMonitoringIntervals(); // 🔥 ДОБАВИТЬ эту строку
 
   // Сохраняем финальную статистику
   console.log('📊 Финальная статистика кэша:', quickCache.getStats());
   console.log('📊 Финальная статистика health кэша:', healthCache.getStats());
+  console.log('📊 Активные соединения:', connectionCounters);
 
   // Очищаем кэш
   quickCache.destroy();
@@ -2458,7 +2567,6 @@ async function preloadCriticalData() {
     console.log('⚠️ Предзагрузка данных пропущена:', error.message);
   }
 }
-
 
 console.log('🚀 УЛУЧШЕННАЯ ОПТИМИЗАЦИЯ КЭШИРОВАНИЯ ЗАВЕРШЕНА:');
 console.log('   • LRU Кэш с глобальным persistence');
