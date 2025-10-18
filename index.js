@@ -530,7 +530,7 @@ let memoryMonitorInterval = null;
 let cacheStatsInterval = null;
 let memoryLeakMonitorInterval = null;
 
-// ЗАМЕНИТЕ функцию startMonitoringIntervals:
+
 function startMonitoringIntervals() {
   stopMonitoringIntervals();
 
@@ -607,8 +607,40 @@ const apiLimiter = rateLimit({
   legacyHeaders: false
 });
 
+
+app.get("/health", (req, res) => {
+  res.json({
+    status: "OK",
+    timestamp: Date.now(),
+    uptime: Math.round(process.uptime())
+  });
+});
+
+// 🔥 ИСПРАВЛЕНИЕ 6: УЛЬТРА-БЫСТРЫЙ PING (1-2ms)
+app.get("/ping", (req, res) => {
+  // 🚀 СУПЕР-ЛЕГКИЙ ответ без логики, без кэша, без вычислений
+  res.json({
+    pong: Date.now(),
+    status: "healthy",
+    timestamp: Date.now()
+  });
+});
+
+app.get("/light-ping", (req, res) => {
+  // 🚀 Такой же легкий
+  res.json({
+    pong: Date.now(),
+    status: "alive",
+    version: "3.0.0-ultra-fast",
+    timestamp: Date.now()
+  });
+});
+
 // 🔥 ИСПРАВЛЕНИЕ 5: MIDDLEWARE ОГРАНИЧЕНИЯ СОЕДИНЕНИЙ
 app.use((req, res, next) => {
+  if (req.url === '/ping' || req.url === '/health' || req.url === '/light-ping') {
+      return next();
+    }
   if (activeConnections >= MAX_CONCURRENT_CONNECTIONS) {
     return res.status(503).json({
       error: "Server busy",
@@ -2097,23 +2129,6 @@ app.get("/connection-stats", (req, res) => {
   });
 });
 
-app.get("/health", (req, res) => {
-  res.json({
-    status: "OK",
-    timestamp: Date.now(),
-    uptime: Math.round(process.uptime())
-  });
-});
-
-// 🔥 ИСПРАВЛЕНИЕ 6: УЛЬТРА-БЫСТРЫЙ PING (1-2ms)
-app.get("/ping", (req, res) => {
-  // 🚀 СУПЕР-ЛЕГКИЙ ответ без логики, без кэша, без вычислений
-  res.json({
-    pong: Date.now(),
-    status: "healthy",
-    timestamp: Date.now()
-  });
-});
 
 // 🔥 ИСПРАВЛЕНИЕ 7: ВЫНЕСЕНА ТЯЖЕЛАЯ ДИАГНОСТИКА
 app.get("/deep-ping", async (req, res) => {
@@ -2143,15 +2158,6 @@ app.get("/deep-ping", async (req, res) => {
   }
 });
 
-app.get("/light-ping", (req, res) => {
-  // 🚀 Такой же легкий
-  res.json({
-    pong: Date.now(),
-    status: "alive",
-    version: "3.0.0-ultra-fast",
-    timestamp: Date.now()
-  });
-});
 
 app.get("/load-metrics", (req, res) => {
   // 🚀 Легкая версия без кэширования
