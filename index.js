@@ -89,34 +89,52 @@ async function safeFirebaseOperation(operation, operationName) {
 const MAX_CONCURRENT_CONNECTIONS = 100;
 let activeConnections = 0;
 
+let lastActiveConnections = 0;
+let isStabilizing = false;
+
+function stabilizeSystem() {
+  if (isStabilizing) return;
+
+  isStabilizing = true;
+  console.log('🔧 Стабилизация системы при снижении нагрузки...');
+
+  // Мягкая очистка вместо агрессивной
+  quickCache.cleanup();
+
+  setTimeout(() => {
+    isStabilizing = false;
+    console.log('✅ Стабилизация завершена');
+  }, 3000);
+}
+
+// Мониторинг снижения нагрузки
+setInterval(() => {
+  if (activeConnections < lastActiveConnections * 0.3 && activeConnections < 20) {
+    // Резкое снижение нагрузки - стабилизируем
+    stabilizeSystem();
+  }
+  lastActiveConnections = activeConnections;
+}, 15000);
+
 // 🔥 ИСПРАВЛЕНИЕ 3: АГРЕССИВНАЯ ОЧИСТКА ПАМЯТИ
-function startAggressiveMemoryCleanup() {
+function startBalancedMemoryCleanup() {
   setInterval(() => {
     const memory = process.memoryUsage();
     const heapUsedMB = Math.round(memory.heapUsed / 1024 / 1024);
 
-    if (heapUsedMB > 500) {
-      console.log(`🚨 Агрессивная очистка памяти при ${heapUsedMB}MB`);
+    // 🚀 Только при реальной необходимости (увеличить порог)
+    if (heapUsedMB > 700) {
+      console.log(`🧹 Очистка памяти при ${heapUsedMB}MB`);
 
-      const targetSize = Math.floor(quickCache.maxSize * 0.3);
-      const keysToDelete = [];
+      // Мягкая очистка вместо агрессивной
+      const cleaned = quickCache.cleanup();
+      console.log(`🧹 Удалено ${cleaned} устаревших записей`);
 
-      for (let [key, value] of quickCache.cache.entries()) {
-        if (value.priority === 'low') {
-          keysToDelete.push(key);
-        }
-        if (keysToDelete.length >= quickCache.cache.size - targetSize) break;
-      }
-
-      keysToDelete.forEach(key => quickCache.cache.delete(key));
-      console.log(`🧹 Удалено ${keysToDelete.length} записей из кэша`);
-
-      if (global.gc) {
+      if (global.gc && heapUsedMB > 800) {
         global.gc();
-        console.log('🧹 Принудительный сбор мусора');
       }
     }
-  }, 15000);
+  }, 45000); // 🚀 Увеличить до 45 секунд
 }
 
 if (process.env.RENDER) {
@@ -174,17 +192,18 @@ class OptimizedLRUCache {
       sets: 0
     };
 
+    // ✅ ТОЛЬКО ОДИН интервал вместо двух
     this.cleanupInterval = setInterval(() => {
       try {
         this.cleanup();
+        // Агрессивную очистку делаем только при необходимости
+        if (this.cache.size > this.maxSize * 0.8) {
+          this.aggressiveCleanup();
+        }
       } catch (error) {
         console.error('❌ Ошибка в cleanup:', error);
       }
-    }, 60000);
-
-    this.aggressiveCleanupInterval = setInterval(() => {
-      this.aggressiveCleanup();
-    }, 300000);
+    }, 120000); // 🚀 Увеличить до 2 минут
 
     console.log(`✅ Кэш инициализирован: maxSize=${maxSize}, maxMemory=${maxMemoryMB}MB`);
   }
@@ -441,10 +460,8 @@ if (!global.performanceMetrics) {
 
 console.log('🆕 Инициализация ИСПРАВЛЕННОГО кэша');
 const quickCache = new OptimizedLRUCache(500, 250);
-const healthCache = new OptimizedLRUCache(50, 10);
 
 global.quickCache = quickCache;
-global.healthCache = healthCache;
 
 console.log('🔍 Исправленный кэш инициализирован:', quickCache.getStats());
 
@@ -513,82 +530,34 @@ let memoryMonitorInterval = null;
 let cacheStatsInterval = null;
 let memoryLeakMonitorInterval = null;
 
+// ЗАМЕНИТЕ функцию startMonitoringIntervals:
 function startMonitoringIntervals() {
   stopMonitoringIntervals();
 
+  // ✅ ТОЛЬКО ОДИН унифицированный интервал мониторинга
   memoryMonitorInterval = setInterval(() => {
     const memory = process.memoryUsage();
     const heapUsedMB = Math.round(memory.heapUsed / 1024 / 1024);
     const memoryLimitMB = MEMORY_LIMIT / 1024 / 1024;
-    const cacheStats = quickCache.getStats();
 
-    if (heapUsedMB > memoryLimitMB * 0.75) {
+    // Критическая проверка памяти
+    if (heapUsedMB > memoryLimitMB * 0.8) {
       console.warn('🚨 ВЫСОКАЯ ЗАГРУЗКА ПАМЯТИ:', {
         используется: heapUsedMB + 'MB',
-        всего: Math.round(memory.heapTotal / 1024 / 1024) + 'MB',
-        лимит: memoryLimitMB + 'MB',
-        размерКэша: cacheStats.size + ' записей',
-        памятьКэша: cacheStats.memoryUsage
+        лимит: memoryLimitMB + 'MB'
       });
 
-      const now = Date.now();
-      let cleanedCount = 0;
-
-      for (let [key, value] of quickCache.cache.entries()) {
-        if (value.priority === 'low' && (now - value.timestamp > 30000)) {
-          quickCache.cache.delete(key);
-          cleanedCount++;
-        }
-      }
-
-      console.log(`🧹 Очистка памяти: удалено ${cleanedCount} low-priority записей кэша`);
-
-      if (global.gc) {
-        global.gc();
-        console.log('🔄 Сборка мусора выполнена');
-      }
+      quickCache.emergencyCleanup();
+      if (global.gc) global.gc();
     }
-  }, 30000);
 
-  cacheStatsInterval = setInterval(() => {
-    const stats = quickCache.getStats();
-
-    if (stats.size > 0 || stats.hits > 10 || stats.misses > 10) {
+    // Логирование статистики раз в 5 минут
+    if (Date.now() % 300000 < 5000) {
+      const stats = quickCache.getStats();
       console.log('📊 Статистика кэша:', stats);
     }
 
-    const hitRate = parseFloat(stats.hitRate);
-    if (stats.hits + stats.misses > 50 && hitRate < 20) {
-      console.warn('🚨 НИЗКИЙ HIT RATE - выполняем оптимизацию кэша');
-      quickCache.aggressiveCleanup();
-    }
-  }, 60000);
-
-  let lastMemoryUsage = process.memoryUsage().heapUsed;
-  let memoryLeakDetected = false;
-
-  memoryLeakMonitorInterval = setInterval(() => {
-    const currentMemory = process.memoryUsage();
-    const memoryGrowth = currentMemory.heapUsed - lastMemoryUsage;
-    const growthMB = Math.round(memoryGrowth / 1024 / 1024);
-
-    if (growthMB > 50 && !memoryLeakDetected) {
-      memoryLeakDetected = true;
-      console.error(`🚨 ОБНАРУЖЕНА УТЕЧКА ПАМЯТИ: +${growthMB}MB за 30с`);
-
-      const cleaned = quickCache.emergencyCleanup();
-      console.log(`🚨 Аварийная очистка кэша: удалено ${cleaned} записей`);
-
-      if (global.gc) {
-        global.gc();
-        console.log('🚨 Аварийный сбор мусора');
-      }
-
-      setTimeout(() => { memoryLeakDetected = false; }, 120000);
-    }
-
-    lastMemoryUsage = currentMemory.heapUsed;
-  }, 30000);
+  }, 60000); // 🚀 Увеличить до 1 минуты
 }
 
 function stopMonitoringIntervals() {
@@ -2076,32 +2045,14 @@ app.get("/health", (req, res) => {
   });
 });
 
-// 🔥 ИСПРАВЛЕНИЕ 6: ОПТИМИЗИРОВАННЫЙ PING
+// 🔥 ИСПРАВЛЕНИЕ 6: УЛЬТРА-БЫСТРЫЙ PING (1-2ms)
 app.get("/ping", (req, res) => {
-  const cacheKey = 'ping_response';
-  const cached = healthCache.get(cacheKey);
-
-  if (cached) {
-    return res.json({
-      pong: Date.now(),
-      status: "healthy",
-      cached: true,
-      timestamp: Date.now()
-    });
-  }
-
-  const response = {
+  // 🚀 СУПЕР-ЛЕГКИЙ ответ без логики, без кэша, без вычислений
+  res.json({
     pong: Date.now(),
     status: "healthy",
-    timestamp: Date.now(),
-    cache: {
-      size: quickCache.cache.size,
-      memory: quickCache.getMemoryUsage() + 'MB'
-    }
-  };
-
-  healthCache.set(cacheKey, response, 2000, 'high');
-  res.json(response);
+    timestamp: Date.now()
+  });
 });
 
 // 🔥 ИСПРАВЛЕНИЕ 7: ВЫНЕСЕНА ТЯЖЕЛАЯ ДИАГНОСТИКА
@@ -2133,80 +2084,28 @@ app.get("/deep-ping", async (req, res) => {
 });
 
 app.get("/light-ping", (req, res) => {
-  const cacheKey = 'light_ping_response';
-  const cached = healthCache.get(cacheKey);
-
-  if (cached) {
-    res.set({
-      'X-Cache': 'hit',
-      'X-Cache-TTL': '5000'
-    });
-    res.json(cached);
-    return;
-  }
-
-  const response = {
+  // 🚀 Такой же легкий
+  res.json({
     pong: Date.now(),
     status: "alive",
-    version: "2.0.0-optimized-cache",
-    cached: true,
+    version: "3.0.0-ultra-fast",
     timestamp: Date.now()
-  };
-
-  healthCache.set(cacheKey, response, 5000, 'high');
-  res.set({
-    'X-Cache': 'miss',
-    'X-Cache-TTL': '5000'
   });
-  res.json(response);
 });
 
 app.get("/load-metrics", (req, res) => {
-  const cacheKey = 'load_metrics_current';
-  const cached = quickCache.get(cacheKey);
-
-  if (cached) {
-    res.set({
-      'X-Cache': 'hit',
-      'X-Cache-TTL': '3000'
-    });
-    res.json(cached);
-    return;
-  }
-
-  const load = os.loadavg();
+  // 🚀 Легкая версия без кэширования
   const memory = process.memoryUsage();
-  const uptime = Date.now() - performanceMetrics.startTime;
-  const requestsPerMinute = (performanceMetrics.requests / (uptime / 60000)).toFixed(2);
 
-  const response = {
-    loadAverage: load,
+  res.json({
     memory: {
       used: Math.round(memory.heapUsed / 1024 / 1024) + 'MB',
-      total: Math.round(memory.heapTotal / 1024 / 1024) + 'MB',
-      rss: Math.round(memory.rss / 1024 / 1024) + 'MB'
+      total: Math.round(memory.heapTotal / 1024 / 1024) + 'MB'
     },
-    performance: {
-      activeRequests: performanceMetrics.requests,
-      requestsPerMinute: requestsPerMinute,
-      errorRate: ((performanceMetrics.errors / Math.max(performanceMetrics.requests, 1)) * 100).toFixed(2) + '%',
-      slowRequests: performanceMetrics.slowRequests
-    },
-    cache: quickCache.getStats(),
-    healthCache: healthCache.getStats(),
-    system: {
-      cpuCores: os.cpus().length,
-      threadPool: THREAD_POOL_SIZE,
-      uptime: Math.round(process.uptime()) + 's'
-    }
-  };
-
-  quickCache.set(cacheKey, response, 3000, 'high');
-  res.set({
-    'X-Cache': 'miss',
-    'X-Cache-TTL': '3000'
+    connections: activeConnections,
+    cacheSize: quickCache.cache.size,
+    timestamp: Date.now()
   });
-  res.json(response);
 });
 
 app.get("/keep-alive", (req, res) => {
@@ -2397,11 +2296,9 @@ app.get("/stress-test", async (req, res) => {
 
 app.get("/cache-stats", (req, res) => {
   const stats = quickCache.getStats();
-  const healthStats = healthCache.getStats();
 
   res.json({
     quickCache: stats,
-    healthCache: healthStats,
     globalPerformance: global.performanceMetrics,
     timestamp: Date.now(),
     cacheKeys: Array.from(quickCache.cache.keys()).slice(0, 10)
@@ -2410,43 +2307,37 @@ app.get("/cache-stats", (req, res) => {
 
 app.post("/reset-cache", (req, res) => {
   const oldStats = quickCache.getStats();
-  const oldHealthStats = healthCache.getStats();
 
   quickCache.cache.clear();
   quickCache.stats = { hits: 0, misses: 0, evictions: 0, sets: 0 };
-
-  healthCache.cache.clear();
-  healthCache.stats = { hits: 0, misses: 0, evictions: 0, sets: 0 };
 
   res.json({
     success: true,
     message: "Кэш сброшен",
     oldStats: {
-      quickCache: oldStats,
-      healthCache: oldHealthStats
+      quickCache: oldStats
     },
     newStats: {
-      quickCache: quickCache.getStats(),
-      healthCache: healthCache.getStats()
+      quickCache: quickCache.getStats()
     }
   });
 });
 
 app.get("/", (req, res) => {
   res.json({
-    message: "Firebase Admin Server работает (ОПТИМИЗИРОВАННАЯ ВЕРСИЯ 2.0 С КЭШИРОВАНИЕМ)",
+    message: "Firebase Admin Server работает (УЛЬТРА-ОПТИМИЗИРОВАННАЯ ВЕРСИЯ 3.0)",
     timestamp: Date.now(),
     endpoints: [
-      "/light-ping - Быстрый пинг для тестирования",
+      "/ping - Ультра-быстрый пинг (1-2ms)",
+      "/light-ping - Легкий пинг",
+      "/health - Проверка здоровья",
       "/load-metrics - Метрики нагрузки",
-      "/health - Упрощенная проверка здоровья",
-      "/info - Информация о сервере и кэше",
-      "/ping - Пинг с диагностикой",
+      "/info - Информация о сервере",
       "/stress-test - Тест нагрузки",
       "/metrics - Метрики производительности",
       "/warmup-cache - Разогрев кэша",
       "/environment - Информация об окружении",
-      "/connection-stats - Мониторинг активных соединений"
+      "/connection-stats - Мониторинг соединений"
     ]
   });
 });
@@ -2542,7 +2433,7 @@ const server = app.listen(PORT, '0.0.0.0', () => {
 
   startMonitoringIntervals();
   startKeepAliveSystem();
-  startAggressiveMemoryCleanup();
+  startBalancedMemoryCleanup();
 
   console.log('🚀 Запуск предзагрузки критических данных...');
   setTimeout(preloadCriticalData, 10000);
@@ -2558,12 +2449,10 @@ function gracefulShutdown() {
   stopMonitoringIntervals();
 
   console.log('📊 Финальная статистика кэша:', quickCache.getStats());
-  console.log('📊 Финальная статистика health кэша:', healthCache.getStats());
   console.log('📊 Активные соединения:', connectionCounters);
   console.log(`📊 Активные HTTP соединения: ${activeConnections}`);
 
   quickCache.destroy();
-  healthCache.destroy();
 
   server.close(() => {
     console.log('✅ HTTP сервер закрыт');
