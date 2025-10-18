@@ -32,92 +32,163 @@ http.globalAgent.maxSockets = Infinity;
 https.globalAgent.maxFreeSockets = 256;
 http.globalAgent.maxFreeSockets = 256;
 
-// ==================== ОПТИМИЗИРОВАННЫЙ LRU КЭШ С ПРИОРИТЕТАМИ ====================
+// ==================== ИСПРАВЛЕННЫЙ OPTIMIZEDLRUCACHE ====================
 class OptimizedLRUCache {
-  constructor(maxSize = 3000, maxMemoryMB = 1000) {
+  constructor(maxSize = 1000, maxMemoryMB = 500) {
     this.maxSize = maxSize;
     this.maxMemoryBytes = maxMemoryMB * 1024 * 1024;
     this.cache = new Map();
     this.stats = {
       hits: 0,
       misses: 0,
-      evictions: 0
+      evictions: 0,
+      sets: 0
     };
-    this.cleanupInterval = setInterval(() => this.cleanup(), 120000);
+
+    // 🔥 ФИКС: Убедимся, что интервал очистки работает
+    this.cleanupInterval = setInterval(() => {
+      try {
+        this.cleanup();
+      } catch (error) {
+        console.error('❌ Ошибка в cleanup:', error);
+      }
+    }, 60000); // Каждую минуту вместо 2 минут
+
+    console.log(`✅ Кэш инициализирован: maxSize=${maxSize}, maxMemory=${maxMemoryMB}MB`);
   }
 
   get(key) {
     if (!this.cache.has(key)) {
       this.stats.misses++;
-      if (typeof performanceMetrics !== 'undefined') {
-        performanceMetrics.cacheMisses++;
+      // 🔥 ФИКС: Безопасная проверка performanceMetrics
+      if (global.performanceMetrics) {
+        global.performanceMetrics.cacheMisses++;
       }
       return null;
     }
 
-    const value = this.cache.get(key);
-    this.cache.delete(key);
-    this.cache.set(key, value);
-    this.stats.hits++;
-    if (typeof performanceMetrics !== 'undefined') {
-      performanceMetrics.cacheHits++;
-    }
+    const item = this.cache.get(key);
 
-    return value.data;
-  }
-
-  set(key, value, ttl = 600000, priority = 'medium') {
-    const item = {
-      data: value,
-      timestamp: Date.now(),
-      ttl: ttl,
-      priority: priority
-    };
-
-    if (this.cache.has(key)) {
+    // 🔥 ФИКС: Проверка TTL перед возвратом
+    const now = Date.now();
+    if (now - item.timestamp > item.ttl) {
       this.cache.delete(key);
-    } else if (this.cache.size >= this.maxSize) {
-      this.evictByPriority();
+      this.stats.misses++;
+      if (global.performanceMetrics) {
+        global.performanceMetrics.cacheMisses++;
+      }
+      return null;
     }
 
+    // 🔥 ФИКС: Эффективное обновление порядка (LRU)
+    this.cache.delete(key);
     this.cache.set(key, item);
 
-    if (this.cache.size % 3 === 0) {
-      this.cleanup();
+    this.stats.hits++;
+    if (global.performanceMetrics) {
+      global.performanceMetrics.cacheHits++;
+    }
+
+    return item.data;
+  }
+
+  set(key, value, ttl = 300000, priority = 'medium') {
+    try {
+      // 🔥 ФИКС: Проверка размера перед добавлением
+      if (this.cache.size >= this.maxSize) {
+        this.evictByPriority();
+      }
+
+      const item = {
+        data: value,
+        timestamp: Date.now(),
+        ttl: ttl,
+        priority: priority
+      };
+
+      // 🔥 ФИКС: Удаляем старую запись если существует
+      if (this.cache.has(key)) {
+        this.cache.delete(key);
+      }
+
+      this.cache.set(key, item);
+      this.stats.sets++;
+
+      // 🔥 ФИКС: Упрощенная очистка - только при реальной необходимости
+      if (this.cache.size > this.maxSize * 0.9) {
+        setTimeout(() => this.cleanup(), 1000);
+      }
+
+      return true;
+    } catch (error) {
+      console.error('❌ Ошибка при установке значения в кэш:', error);
+      return false;
     }
   }
 
+  // 🔥 ФИКС: Улучшенный алгоритм вытеснения
   evictByPriority() {
+    const now = Date.now();
     const priorities = ['low', 'medium', 'high'];
 
+    // Сначала ищем просроченные записи
+    for (let [key, value] of this.cache.entries()) {
+      if (now - value.timestamp > value.ttl) {
+        this.cache.delete(key);
+        this.stats.evictions++;
+        console.log(`🗑️ Вытеснена просроченная запись: ${key}`);
+        return;
+      }
+    }
+
+    // Затем по приоритету (low -> medium -> high)
     for (const priority of priorities) {
       for (let [key, value] of this.cache.entries()) {
         if (value.priority === priority) {
           this.cache.delete(key);
           this.stats.evictions++;
+          console.log(`🗑️ Вытеснена запись с приоритетом ${priority}: ${key}`);
           return;
         }
       }
     }
 
+    // Если ничего не нашли, удаляем первую запись
     const firstKey = this.cache.keys().next().value;
-    this.cache.delete(firstKey);
-    this.stats.evictions++;
+    if (firstKey) {
+      this.cache.delete(firstKey);
+      this.stats.evictions++;
+      console.log(`🗑️ Вытеснена первая запись: ${firstKey}`);
+    }
   }
 
+  // 🔥 ФИКС: Упрощенная и эффективная очистка
   cleanup() {
-    const now = Date.now();
-    let cleaned = 0;
+    try {
+      const now = Date.now();
+      let cleaned = 0;
+      const keysToDelete = [];
 
-    for (let [key, value] of this.cache.entries()) {
-      if (now - value.timestamp > value.ttl) {
-        this.cache.delete(key);
-        cleaned++;
+      for (let [key, value] of this.cache.entries()) {
+        if (now - value.timestamp > value.ttl) {
+          keysToDelete.push(key);
+          cleaned++;
+
+          // Ограничим количество удалений за одну очистку
+          if (cleaned >= 50) break;
+        }
       }
-    }
 
-    if (cleaned > 0 && process.env.NODE_ENV === 'development') {
-      console.log(`🧹 Автоочистка кэша: удалено ${cleaned} устаревших записей`);
+      keysToDelete.forEach(key => this.cache.delete(key));
+
+      if (cleaned > 0) {
+        console.log(`🧹 Автоочистка кэша: удалено ${cleaned} устаревших записей`);
+      }
+
+      return cleaned;
+    } catch (error) {
+      console.error('❌ Ошибка при очистке кэша:', error);
+      return 0;
     }
   }
 
@@ -127,6 +198,7 @@ class OptimizedLRUCache {
       size: this.cache.size,
       hits: this.stats.hits,
       misses: this.stats.misses,
+      sets: this.stats.sets,
       evictions: this.stats.evictions,
       hitRate: total > 0 ? ((this.stats.hits / total) * 100).toFixed(2) + '%' : '0%',
       memoryUsage: this.getMemoryUsage() + 'MB'
@@ -134,71 +206,105 @@ class OptimizedLRUCache {
   }
 
   getMemoryUsage() {
-    let size = 0;
-    for (let [key, value] of this.cache.entries()) {
-      size += key.length;
-      try {
-        size += JSON.stringify(value).length;
-      } catch (e) {
-        size += 100;
-      }
-    }
-    return Math.round(size / 1024 / 1024);
-  }
-
-  emergencyCleanup() {
-    const currentSize = this.cache.size;
-    const targetSize = Math.floor(this.maxSize * 0.2);
-
-    if (currentSize <= targetSize) return 0;
-
-    let deleted = 0;
-    const keysToDelete = [];
-
-    for (let [key, value] of this.cache.entries()) {
-      if (value.priority === 'low') {
-        keysToDelete.push(key);
-        deleted++;
-        if (deleted >= currentSize - targetSize) break;
-      }
-    }
-
-    if (deleted < currentSize - targetSize) {
+    try {
+      let size = 0;
       for (let [key, value] of this.cache.entries()) {
-        if (value.priority === 'medium' && !keysToDelete.includes(key)) {
-          keysToDelete.push(key);
-          deleted++;
-          if (deleted >= currentSize - targetSize) break;
+        size += key.length;
+        try {
+          size += JSON.stringify(value.data).length;
+        } catch (e) {
+          size += 100;
         }
       }
+      return Math.round(size / 1024 / 1024);
+    } catch (error) {
+      return 0;
     }
+  }
 
-    keysToDelete.forEach(key => this.cache.delete(key));
-    return deleted;
+  // 🔥 ФИКС: Аварийная очистка
+  emergencyCleanup() {
+    try {
+      const currentSize = this.cache.size;
+      const targetSize = Math.floor(this.maxSize * 0.3); // Уменьшаем до 30%
+
+      if (currentSize <= targetSize) return 0;
+
+      const keysToDelete = [];
+      const now = Date.now();
+
+      // Сначала удаляем просроченные
+      for (let [key, value] of this.cache.entries()) {
+        if (now - value.timestamp > value.ttl) {
+          keysToDelete.push(key);
+          if (keysToDelete.length >= currentSize - targetSize) break;
+        }
+      }
+
+      // Затем по приоритету low
+      if (keysToDelete.length < currentSize - targetSize) {
+        for (let [key, value] of this.cache.entries()) {
+          if (value.priority === 'low' && !keysToDelete.includes(key)) {
+            keysToDelete.push(key);
+            if (keysToDelete.length >= currentSize - targetSize) break;
+          }
+        }
+      }
+
+      // Затем medium
+      if (keysToDelete.length < currentSize - targetSize) {
+        for (let [key, value] of this.cache.entries()) {
+          if (value.priority === 'medium' && !keysToDelete.includes(key)) {
+            keysToDelete.push(key);
+            if (keysToDelete.length >= currentSize - targetSize) break;
+          }
+        }
+      }
+
+      keysToDelete.forEach(key => this.cache.delete(key));
+      console.log(`🚨 Аварийная очистка: удалено ${keysToDelete.length} записей`);
+
+      return keysToDelete.length;
+    } catch (error) {
+      console.error('❌ Ошибка при аварийной очистке:', error);
+      return 0;
+    }
+  }
+
+  // 🔥 ФИКС: Удаляем интервал при уничтожении
+  destroy() {
+    if (this.cleanupInterval) {
+      clearInterval(this.cleanupInterval);
+      this.cleanupInterval = null;
+    }
   }
 }
 
 // ==================== ИСПРАВЛЕНИЕ: УЛУЧШЕННАЯ ИНИЦИАЛИЗАЦИЯ КЭША ДЛЯ RENDER ====================
 
-// 🔥 ДОБАВЛЯЕМ ПРОВЕРКУ СУЩЕСТВОВАНИЯ КЭША В ГЛОБАЛЬНОЙ ОБЛАСТИ
-if (global.quickCache && global.quickCache.cache && global.quickCache.cache.size > 0) {
-  console.log('♻️ Восстановление существующего кэша:', global.quickCache.cache.size + ' записей');
-  var quickCache = global.quickCache;
-  var healthCache = global.healthCache;
-} else {
-  console.log('🆕 Инициализация нового кэша');
-  var quickCache = new OptimizedLRUCache(1000, 500); // 🔥 УМЕНЬШАЕМ ДЛЯ RENDER
-  var healthCache = new OptimizedLRUCache(100, 25);
-
-  // 🔥 СОХРАНЯЕМ В ГЛОБАЛЬНУЮ ОБЛАСТЬ ДЛЯ PERSISTENCE
-  global.quickCache = quickCache;
-  global.healthCache = healthCache;
+// 🔥 ФИКС: Гарантируем, что performanceMetrics доступен глобально
+// ДОБАВЬТЕ ЭТО ПЕРЕД ИНИЦИАЛИЗАЦИЕЙ КЭША:
+if (!global.performanceMetrics) {
+  global.performanceMetrics = {
+    requests: 0,
+    errors: 0,
+    slowRequests: 0,
+    cacheHits: 0,
+    cacheMisses: 0,
+    startTime: Date.now()
+  };
 }
 
-console.log('🔍 Оптимизированный кэш инициализирован:', {
-  maxSize: quickCache.maxSize,
-  maxMemory: Math.round(quickCache.maxMemoryBytes / 1024 / 1024) + 'MB'
-});
+// 🔥 ФИКС: Упрощенная инициализация кэша (ЗАМЕНИТЕ ВАШ ТЕКУЩИЙ КОД):
+console.log('🆕 Инициализация ИСПРАВЛЕННОГО кэша');
+var quickCache = new OptimizedLRUCache(500, 250); // Начнем с меньшего размера
+var healthCache = new OptimizedLRUCache(50, 10);
+
+// 🔥 ФИКС: Сохраняем в глобальную область
+global.quickCache = quickCache;
+global.healthCache = healthCache;
+
+console.log('🔍 Исправленный кэш инициализирован:', quickCache.getStats());
 
 // ==================== КОНФИГУРАЦИЯ ТАЙМАУТОВ И ПОВТОРОВ ====================
 const FIREBASE_TIMEOUT = 20000;
@@ -2110,6 +2216,44 @@ function stopKeepAliveSystem() {
     console.log('🔔 Система авто-пинга остановлена');
   }
 }
+// 🔥 ДОБАВЬТЕ ЭТОТ ЭНДПОИНТ ДЛЯ ДИАГНОСТИКИ:
+app.get("/cache-stats", (req, res) => {
+  const stats = quickCache.getStats();
+  const healthStats = healthCache.getStats();
+
+  res.json({
+    quickCache: stats,
+    healthCache: healthStats,
+    globalPerformance: global.performanceMetrics,
+    timestamp: Date.now(),
+    cacheKeys: Array.from(quickCache.cache.keys()).slice(0, 10) // Первые 10 ключей
+  });
+});
+
+// 🔥 ЭНДПОИНТ ДЛЯ СБРОСА КЭША:
+app.post("/reset-cache", (req, res) => {
+  const oldStats = quickCache.getStats();
+  const oldHealthStats = healthCache.getStats();
+
+  quickCache.cache.clear();
+  quickCache.stats = { hits: 0, misses: 0, evictions: 0, sets: 0 };
+
+  healthCache.cache.clear();
+  healthCache.stats = { hits: 0, misses: 0, evictions: 0, sets: 0 };
+
+  res.json({
+    success: true,
+    message: "Кэш сброшен",
+    oldStats: {
+      quickCache: oldStats,
+      healthCache: oldHealthStats
+    },
+    newStats: {
+      quickCache: quickCache.getStats(),
+      healthCache: healthCache.getStats()
+    }
+  });
+});
 
 // ==================== ЗАПУСК СЕРВЕРА ====================
 
