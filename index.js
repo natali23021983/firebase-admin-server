@@ -507,7 +507,7 @@ async function getUserWithCache(userId) {
     const userData = userSnap.val();
 
     if (userData) {
-      quickCache.set(cacheKey, userData, 1800000, 'high');
+      quickCache.set(cacheKey, userData, 1200000, 'high');
       if (process.env.NODE_ENV === 'development') {
         console.log(`💾 Пользователь ${userId} сохранен в кэш`);
       }
@@ -610,7 +610,7 @@ async function getGroupWithCache(groupId) {
     const groupData = groupSnap.val();
 
     if (groupData) {
-      quickCache.set(cacheKey, groupData, 900000, 'high');
+      quickCache.set(cacheKey, groupData, 1800000, 'high');
       if (process.env.NODE_ENV === 'development') {
         console.log(`💾 Группа ${groupId} сохранена в кэш`);
       }
@@ -2260,7 +2260,8 @@ const MAX_CONSECUTIVE_FAILURES = 10;
 // ИСПРАВЛЕНИЕ 6: Улучшенная функция авто-пинга для Render.com
 function enhancedKeepAlivePing() {
   const baseUrl = process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`;
-  const pingUrl = `${baseUrl}/ping`;
+  // ИСПРАВЛЕНИЕ: используем надежный эндпоинт
+  const pingUrl = `${baseUrl}/health`;
   const startTime = Date.now();
 
   const protocol = pingUrl.startsWith('https') ? require('https') : require('http');
@@ -2280,9 +2281,9 @@ function enhancedKeepAlivePing() {
     }
   });
 
-  req.setTimeout(15000, () => {
+  req.setTimeout(10000, () => { // Уменьшили таймаут до 10с
     consecutiveFailures++;
-    console.warn(`🏓 Авто-пинг: ⏰ Таймаут 15с - Ошибок подряд: ${consecutiveFailures}`);
+    console.warn(`🏓 Авто-пинг: ⏰ Таймаут 10с - Ошибок подряд: ${consecutiveFailures}`);
     req.destroy();
   });
 
