@@ -1984,6 +1984,66 @@ function formatEventNotification(title, time, place, groupName) {
 }
 
 // ==================== HEALTH CHECKS И МОНИТОРИНГ ====================
+// 🔥 ОПТИМАЛЬНЫЙ WARMUP ДЛЯ JMETER И ПРОДАКШЕНА
+app.get("/warmup-cache", async (req, res) => {
+  const startTime = Date.now();
+  const requestId = Math.random().toString(36).substring(2, 8);
+
+  console.log(`🔥 [${requestId}] GET /warmup-cache - Запрос от JMeter`);
+
+  try {
+    // 1. МГНОВЕННЫЙ ОТВЕТ (не блокирующий)
+    const initialStats = quickCache.getStats();
+
+    res.json({
+      success: true,
+      requestId: requestId,
+      message: "Запрос на разогрев кэша принят",
+      initialCache: {
+        size: initialStats.size,
+        hitRate: initialStats.hitRate,
+        memory: initialStats.memoryUsage
+      },
+      responseTime: `${Date.now() - startTime}ms`,
+      timestamp: Date.now(),
+      note: "Кэш разогревается в фоновом режиме"
+    });
+
+    // 2. ФОНОВЫЙ РАЗОГРЕВ (после отправки ответа)
+    setTimeout(async () => {
+      try {
+        console.log(`🔥 [${requestId}] Фоновый разогрев кэша...`);
+
+        const warmupStart = Date.now();
+
+        // Параллельный разогрев критических данных
+        await Promise.allSettled([
+          getGroupsStructureWithCache(),
+          // Добавьте другие важные данные при необходимости
+        ]);
+
+        const warmupTime = Date.now() - warmupStart;
+        const finalStats = quickCache.getStats();
+
+        console.log(`✅ [${requestId}] Фоновый разогрев завершен за ${warmupTime}ms`);
+        console.log(`📊 [${requestId}] Кэш: ${finalStats.size} записей, HitRate: ${finalStats.hitRate}`);
+
+      } catch (error) {
+        console.error(`❌ [${requestId}] Ошибка фонового разогрева:`, error.message);
+      }
+    }, 100); // небольшая задержка чтобы клиент получил ответ
+
+  } catch (error) {
+    console.error(`❌ [${requestId}] Ошибка warmup-cache:`, error);
+    res.status(500).json({
+      success: false,
+      requestId: requestId,
+      error: error.message,
+      responseTime: `${Date.now() - startTime}ms`
+    });
+  }
+});
+
 
 app.post("/warmup-cache", async (req, res) => {
   try {
