@@ -107,35 +107,6 @@ function stabilizeSystem() {
   }, 3000);
 }
 
-// Мониторинг снижения нагрузки
-setInterval(() => {
-  if (activeConnections < lastActiveConnections * 0.3 && activeConnections < 20) {
-    // Резкое снижение нагрузки - стабилизируем
-    stabilizeSystem();
-  }
-  lastActiveConnections = activeConnections;
-}, 15000);
-
-// 🔥 ИСПРАВЛЕНИЕ 3: АГРЕССИВНАЯ ОЧИСТКА ПАМЯТИ
-function startBalancedMemoryCleanup() {
-  setInterval(() => {
-    const memory = process.memoryUsage();
-    const heapUsedMB = Math.round(memory.heapUsed / 1024 / 1024);
-
-    // 🚀 Только при реальной необходимости (увеличить порог)
-    if (heapUsedMB > 700) {
-      console.log(`🧹 Очистка памяти при ${heapUsedMB}MB`);
-
-      // Мягкая очистка вместо агрессивной
-      const cleaned = quickCache.cleanup();
-      console.log(`🧹 Удалено ${cleaned} устаревших записей`);
-
-      if (global.gc && heapUsedMB > 800) {
-        global.gc();
-      }
-    }
-  }, 45000); // 🚀 Увеличить до 45 секунд
-}
 
 if (process.env.RENDER) {
   console.log('🚀 Обнаружена среда Render.com - применяем оптимизации');
@@ -196,14 +167,13 @@ class OptimizedLRUCache {
     this.cleanupInterval = setInterval(() => {
       try {
         this.cleanup();
-        // Агрессивную очистку делаем только при необходимости
         if (this.cache.size > this.maxSize * 0.8) {
           this.aggressiveCleanup();
         }
       } catch (error) {
         console.error('❌ Ошибка в cleanup:', error);
       }
-    }, 120000); // 🚀 Увеличить до 2 минут
+    }, 300000); // 5 минут
 
     console.log(`✅ Кэш инициализирован: maxSize=${maxSize}, maxMemory=${maxMemoryMB}MB`);
   }
@@ -459,7 +429,7 @@ if (!global.performanceMetrics) {
 }
 
 console.log('🆕 Инициализация ИСПРАВЛЕННОГО кэша');
-const quickCache = new OptimizedLRUCache(500, 250);
+const quickCache = new OptimizedLRUCache(200, 100);
 
 global.quickCache = quickCache;
 
@@ -557,7 +527,7 @@ function startMonitoringIntervals() {
       console.log('📊 Статистика кэша:', stats);
     }
 
-  }, 60000); // 🚀 Увеличить до 1 минуты
+  }, 120000); // 🚀 Увеличить до 2 минут
 }
 
 function stopMonitoringIntervals() {
@@ -638,14 +608,11 @@ app.get("/light-ping", (req, res) => {
 
 // 🔥 ИСПРАВЛЕНИЕ 5: MIDDLEWARE ОГРАНИЧЕНИЯ СОЕДИНЕНИЙ
 app.use((req, res, next) => {
-  if (req.url === '/ping' || req.url === '/health' || req.url === '/light-ping') {
-      return next();
-    }
+  // ✅ ВКЛЮЧИТЬ ВСЕ эндпоинты в лимит
   if (activeConnections >= MAX_CONCURRENT_CONNECTIONS) {
     return res.status(503).json({
       error: "Server busy",
-      retryAfter: 30,
-      message: "Сервер перегружен, попробуйте позже"
+      retryAfter: 30
     });
   }
 
@@ -2498,7 +2465,7 @@ const server = app.listen(PORT, '0.0.0.0', () => {
 
   startMonitoringIntervals();
   startKeepAliveSystem();
-  startBalancedMemoryCleanup();
+
 
   console.log('🚀 Запуск предзагрузки критических данных...');
   setTimeout(preloadCriticalData, 10000);
