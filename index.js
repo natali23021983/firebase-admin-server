@@ -1791,6 +1791,30 @@ app.get("/stress-test", async (req, res) => {
   });
 });
 
+// 📊 Endpoint для статуса авто-пинга
+app.get("/auto-ping-status", (req, res) => {
+  res.json({
+    autoPing: {
+      enabled: keepAliveInterval !== null,
+      interval: KEEP_ALIVE_INTERVAL,
+      consecutiveFailures: consecutiveFailures,
+      maxAllowedFailures: MAX_CONSECUTIVE_FAILURES,
+      lastCheck: new Date().toISOString(),
+      nextCheck: keepAliveInterval ? new Date(Date.now() + KEEP_ALIVE_INTERVAL).toISOString() : null,
+      status: consecutiveFailures >= MAX_CONSECUTIVE_FAILURES ? "CRITICAL" :
+              consecutiveFailures > 0 ? "WARNING" : "HEALTHY"
+    },
+    server: {
+      uptime: Math.round(process.uptime()) + "s",
+      memory: Math.round(process.memoryUsage().heapUsed / 1024 / 1024) + "MB"
+    },
+    recommendations: consecutiveFailures >= MAX_CONSECUTIVE_FAILURES ?
+      "IMMEDIATE ATTENTION NEEDED: Multiple ping failures detected" :
+      consecutiveFailures > 0 ? "Monitor server health" :
+      "All systems normal"
+  });
+});
+
 app.get("/", (req, res) => {
   res.json({
     message: "Firebase Admin Server работает (ОПТИМИЗИРОВАННАЯ ВЕРСИЯ 2.0)",
@@ -1799,6 +1823,7 @@ app.get("/", (req, res) => {
       "/light-ping - Быстрый пинг для тестирования",
       "/load-metrics - Метрики нагрузки",
       "/health - Упрощенная проверка здоровья",
+      "/auto-ping-status - Статус авто-пинг системы",
       "/info - Информация о сервере",
       "/ping - Пинг с диагностикой",
       "/stress-test - Тест нагрузки",
@@ -1809,18 +1834,69 @@ app.get("/", (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 
-// ==================== ОПТИМИЗАЦИЯ №7: АВТО-ПИНГ ДЛЯ RENDER ====================
-const KEEP_ALIVE_INTERVAL = 14 * 60 * 1000; // 14 минут
+// ==================== ОПТИМИЗАЦИЯ №7: УЛУЧШЕННАЯ АВТО-ПИНГ СИСТЕМА ДЛЯ RENDER ====================
+const KEEP_ALIVE_INTERVAL = 14 * 60 * 1000; // 14 минут (Render timeout = 15 минут)
+let keepAliveInterval = null;
+let consecutiveFailures = 0;
+const MAX_CONSECUTIVE_FAILURES = 3;
 
-function keepAlivePing() {
-  const pingUrl = `http://localhost:${PORT}/light-ping`; // ИЗМЕНЕНО: используем light-ping
+function enhancedKeepAlivePing() {
+  const pingUrl = `http://localhost:${PORT}/light-ping`;
+  const startTime = Date.now();
 
-  require('http').get(pingUrl, (res) => {
+  const req = require('http').get(pingUrl, (res) => {
+    const duration = Date.now() - startTime;
     const success = res.statusCode === 200;
-    console.log(`🏓 Auto-ping: ${success ? '✅' : '❌'} ${new Date().toISOString()}`);
-  }).on('error', (err) => {
-    console.log(`🏓 Auto-ping failed: ${err.message}`);
+
+    if (success) {
+      consecutiveFailures = 0;
+      if (process.env.NODE_ENV === 'development' || duration > 1000) {
+        console.log(`🏓 Auto-ping: ✅ ${duration}ms - ${new Date().toISOString()}`);
+      }
+    } else {
+      consecutiveFailures++;
+      console.warn(`🏓 Auto-ping: ❌ Status ${res.statusCode} - Failures: ${consecutiveFailures}`);
+    }
   });
+
+  req.setTimeout(10000, () => {
+    consecutiveFailures++;
+    console.error(`🏓 Auto-ping: ⏰ Timeout after 10s - Failures: ${consecutiveFailures}`);
+    req.destroy();
+  });
+
+  req.on('error', (err) => {
+    consecutiveFailures++;
+    console.error(`🏓 Auto-ping: 🔥 Error - ${err.message} - Failures: ${consecutiveFailures}`);
+  });
+
+  // Автоматический перезапуск при множественных ошибках
+  if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+    console.error('🚨 CRITICAL: Multiple ping failures, considering server restart');
+    // Здесь можно добавить логику для graceful shutdown
+    process.exit(1);
+  }
+}
+
+function startKeepAliveSystem() {
+  if (keepAliveInterval) {
+    clearInterval(keepAliveInterval);
+  }
+
+  console.log(`🔔 Auto-ping system started: pinging every ${KEEP_ALIVE_INTERVAL / 60000} minutes`);
+
+  keepAliveInterval = setInterval(enhancedKeepAlivePing, KEEP_ALIVE_INTERVAL);
+
+  // Первый пинг через 10 секунд после запуска
+  setTimeout(enhancedKeepAlivePing, 10000);
+}
+
+function stopKeepAliveSystem() {
+  if (keepAliveInterval) {
+    clearInterval(keepAliveInterval);
+    keepAliveInterval = null;
+    console.log('🔔 Auto-ping system stopped');
+  }
 }
 
 const server = app.listen(PORT, '0.0.0.0', () => {
@@ -1835,17 +1911,26 @@ const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`✅ Лимитер запросов: включен (НОВОЕ)`);
   console.log(`✅ Авто-пинг: каждые ${KEEP_ALIVE_INTERVAL / 60000} минут`);
 
-  // 🔄 АВТО-ПИНГ СИСТЕМА ДЛЯ RENDER
-  const keepAliveInterval = setInterval(keepAlivePing, KEEP_ALIVE_INTERVAL);
+  // 🚀 ЗАПУСК УЛУЧШЕННОЙ СИСТЕМЫ АВТО-ПИНГ
+  startKeepAliveSystem();
 
-  // Первый пинг через 5 секунд после запуска
-  setTimeout(keepAlivePing, 5000);
-
-  // Очистка при завершении
-  server.on('close', () => {
-    clearInterval(keepAliveInterval);
-    console.log('🔄 Авто-пинг система остановлена');
-  });
+  // Дополнительный глубокий health check через 30 секунд после запуска
+  setTimeout(() => {
+    require('http').get(`http://localhost:${PORT}/deep-health`, (res) => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        try {
+          const result = JSON.parse(data);
+          console.log(`🔍 Deep health check after 30s: ${result.status}`);
+        } catch (e) {
+          console.log('🔍 Deep health check completed (no parse)');
+        }
+      });
+    }).on('error', (err) => {
+      console.log('🔍 Deep health check failed:', err.message);
+    });
+  }, 30000);
 });
 
 server.keepAliveTimeout = 60000;
@@ -1856,12 +1941,8 @@ process.on('SIGTERM', () => {
   console.log('🔄 Получен SIGTERM, плавное завершение работы');
   console.log('📊 Финальная статистика кэша:', quickCache.getStats());
 
-  // Останавливаем авто-пинг
-  const keepAliveInterval = require('timers')._getFirstTimer();
-  if (keepAliveInterval) {
-    clearInterval(keepAliveInterval);
-    console.log('🔄 Авто-пинг система остановлена');
-  }
+  // Останавливаем авто-пинг систему с помощью улучшенной функции
+  stopKeepAliveSystem();
 
   server.close(() => {
     console.log('✅ HTTP сервер закрыт');
@@ -1869,7 +1950,7 @@ process.on('SIGTERM', () => {
   });
 
   setTimeout(() => {
-    console.log('⚠️ Принудительное завершение');
+    console.log('⚠️ Принудительное завершение после 10s timeout');
     process.exit(1);
   }, 10000);
 });
@@ -1906,3 +1987,4 @@ console.log('   • Лимитер запросов реализован');
 console.log('   • Таймауты уменьшены для лучшей отзывчивости');
 console.log('   • Предварительная загрузка данных родителей');
 console.log('   • Упрощенные health checks для нагрузочного тестирования');
+console.log('   • Улучшенная авто-пинг система для Render.com');
