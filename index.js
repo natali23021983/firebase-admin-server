@@ -279,8 +279,8 @@ global.healthCache = healthCache;
 console.log('🔍 Исправленный кэш инициализирован:', quickCache.getStats());
 
 // ==================== КОНФИГУРАЦИЯ ТАЙМАУТОВ И ПОВТОРОВ ====================
-const FIREBASE_TIMEOUT = 20000;
-const S3_TIMEOUT = 45000;
+const FIREBASE_TIMEOUT = 30000;
+const S3_TIMEOUT = 60000;
 const RETRY_ATTEMPTS = 3;
 const RETRY_BASE_DELAY = 1000;
 
@@ -2161,16 +2161,19 @@ setInterval(() => {
 
 // ==================== АВТО-ПИНГ СИСТЕМА ====================
 
-const KEEP_ALIVE_INTERVAL = 14 * 60 * 1000;
+const KEEP_ALIVE_INTERVAL = 10 * 60 * 1000;
 let keepAliveInterval = null;
 let consecutiveFailures = 0;
 const MAX_CONSECUTIVE_FAILURES = 10;
 
 function enhancedKeepAlivePing() {
-  const pingUrl = `http://localhost:${PORT}/light-ping`;
+  const baseUrl = process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`;
+  const pingUrl = `${baseUrl}/light-ping`;
   const startTime = Date.now();
 
-  const req = require('http').get(pingUrl, (res) => {
+  const protocol = pingUrl.startsWith('https') ? require('https') : require('http');
+
+  const req = protocol.get(pingUrl, (res) => {
     const duration = Date.now() - startTime;
     const success = res.statusCode === 200;
 
@@ -2185,9 +2188,9 @@ function enhancedKeepAlivePing() {
     }
   });
 
-  req.setTimeout(10000, () => {
+  req.setTimeout(15000, () => {
     consecutiveFailures++;
-    console.warn(`🏓 Авто-пинг: ⏰ Таймаут 10с - Ошибок подряд: ${consecutiveFailures}`);
+    console.warn(`🏓 Авто-пинг: ⏰ Таймаут 15с - Ошибок подряд: ${consecutiveFailures}`);
     req.destroy();
   });
 
@@ -2198,7 +2201,6 @@ function enhancedKeepAlivePing() {
 
   if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
     console.error('🚨 ВНИМАНИЕ: Много ошибок авто-пинга, но сервер продолжает работу');
-    console.error('🚨 Проверьте подключение к интернету и настройки Firebase');
   }
 }
 
