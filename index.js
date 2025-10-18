@@ -229,7 +229,6 @@ const { S3Client, PutObjectCommand, DeleteObjectCommand, DeleteObjectsCommand } 
 const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 
 // ==================== НОВОЕ: Оптимизация AWS SDK ====================
-const { NodeHttpHandler } = require("@aws-sdk/node-http-handler");
 
 const app = express();
 
