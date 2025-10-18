@@ -2347,7 +2347,7 @@ const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`✅ Лимитер запросов: включен`);
   console.log(`✅ Авто-пинг: каждые ${KEEP_ALIVE_INTERVAL / 60000} минут`);
 
-  startKeepAliveSystem();
+  //startKeepAliveSystem();
 
   console.log('🚀 Запуск предзагрузки критических данных...');
   setTimeout(preloadCriticalData, 10000);
