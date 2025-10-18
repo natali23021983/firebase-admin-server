@@ -1,6 +1,16 @@
 // ==================== НОВОЕ: Оптимизации пула потоков и памяти ====================
 require('dotenv').config();
+// Включим подробное логирование
+process.on('uncaughtException', (error) => {
+  console.error('🔥 КРИТИЧЕСКАЯ ОШИБКА:', error);
+  console.error('🔥 Стек вызовов:', error.stack);
+  process.exit(1);
+});
 
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('🔥 НЕОБРАБОТАННЫЙ ПРОМИС:', reason);
+  console.error('🔥 Стек:', reason?.stack);
+});
 // Увеличиваем лимиты Node.js для высоких нагрузок
 const os = require('os');
 const THREAD_POOL_SIZE = process.env.UV_THREADPOOL_SIZE || 128;
