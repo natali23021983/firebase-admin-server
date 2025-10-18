@@ -1849,8 +1849,9 @@ app.get("/light-ping", (req, res) => {
 });
 
 app.get("/load-metrics", (req, res) => {
+  // 🔥 ИЗМЕНИТЕ: используем quickCache вместо healthCache для load-metrics
   const cacheKey = 'load_metrics_current';
-  const cached = healthCache.get(cacheKey);
+  const cached = quickCache.get(cacheKey);  // 🔥 ФИКС: quickCache вместо healthCache
 
   if (cached) {
     res.set({
@@ -1888,7 +1889,8 @@ app.get("/load-metrics", (req, res) => {
     }
   };
 
-  healthCache.set(cacheKey, response, 3000, 'high');
+  // 🔥 ФИКС: quickCache вместо healthCache
+  quickCache.set(cacheKey, response, 3000, 'high');
   res.set({
     'X-Cache': 'miss',
     'X-Cache-TTL': '3000'
