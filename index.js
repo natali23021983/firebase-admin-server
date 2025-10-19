@@ -2442,21 +2442,20 @@ function startMainServer() {
     }
   }
 
-  function startKeepAliveSystem() {
-    if (process.env.NODE_ENV === 'production' && process.env.RENDER_EXTERNAL_URL) {
-      console.log('🔔 Авто-пинг отключен в production на Render.com');
-      return;
-    }
+function startKeepAliveSystem() {
+  if (keepAliveInterval) {
+    clearInterval(keepAliveInterval);
+  }
 
-    if (keepAliveInterval) {
-      clearInterval(keepAliveInterval);
-    }
+  const KEEP_ALIVE_INTERVAL = 4 * 60 * 1000; // 4 минуты (Render.com спит после 5)
 
-    console.log(`🔔 Система авто-пинга: каждые ${KEEP_ALIVE_INTERVAL / 60000} минут`);
+  console.log(`🔔 СИСТЕМА АВТО-ПИНГА АКТИВИРОВАНА: каждые ${KEEP_ALIVE_INTERVAL / 60000} минут`);
+  console.log(`🔔 Предотвращение сна сервера на Render.com`);
 
-    keepAliveInterval = setInterval(enhancedKeepAlivePing, KEEP_ALIVE_INTERVAL);
+  keepAliveInterval = setInterval(enhancedKeepAlivePing, KEEP_ALIVE_INTERVAL);
 
-    setTimeout(enhancedKeepAlivePing, 30000);
+  setTimeout(enhancedKeepAlivePing, 30000);
+}
   }
 
   function stopKeepAliveSystem() {
