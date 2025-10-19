@@ -11,17 +11,9 @@ const tester = net.createServer();
 
 tester.once('error', (err) => {
   if (err.code === 'EADDRINUSE') {
-    console.log('🚨 ОБНАРУЖЕН ДУБЛИКАТ! Завершаем этот процесс через 3 секунды...');
-    console.log('💡 Это нормально - останется только один основной процесс');
-
-    setTimeout(() => {
-      console.log('🔴 Завершаем дублирующий процесс...');
-      process.exit(0);
-    }, 3000);
-    return;
+    console.log('🚨 ОБНАРУЖЕН ДУБЛИКАТ! Завершаем процесс...');
+    process.exit(0);
   }
-  console.error('❌ Другая ошибка порта:', err.message);
-  process.exit(1);
 });
 
 tester.once('listening', () => {
@@ -38,11 +30,8 @@ setInterval(() => {
   const start = Date.now();
   setImmediate(() => {
     eventLoopLag = Date.now() - start;
-    if (eventLoopLag > 50) {
-      console.warn(`⚠️ EVENT LOOP LAG: ${eventLoopLag}ms`);
-    }
   });
-}, 5000);
+}, 30000);
 
 function startMainServer() {
 
@@ -176,15 +165,8 @@ class OptimizedLRUCache {
 
     // ✅ ТОЛЬКО ОДИН интервал вместо двух
     this.cleanupInterval = setInterval(() => {
-      try {
-        this.cleanup();
-        if (this.cache.size > this.maxSize * 0.8) {
-          this.aggressiveCleanup();
-        }
-      } catch (error) {
-        console.error('❌ Ошибка в cleanup:', error);
-      }
-    }, 300000); // 5 минут
+      this.cleanup();
+    }, 600000);
 
     console.log(`✅ Кэш инициализирован: maxSize=${maxSize}, maxMemory=${maxMemoryMB}MB`);
   }
@@ -518,34 +500,20 @@ let memoryMonitorInterval = null;
 let cacheStatsInterval = null;
 let memoryLeakMonitorInterval = null;
 
-
 function startMonitoringIntervals() {
   stopMonitoringIntervals();
 
-  // ✅ ТОЛЬКО ОДИН унифицированный интервал мониторинга
   memoryMonitorInterval = setInterval(() => {
     const memory = process.memoryUsage();
     const heapUsedMB = Math.round(memory.heapUsed / 1024 / 1024);
-    const memoryLimitMB = MEMORY_LIMIT / 1024 / 1024;
 
-    // Критическая проверка памяти
-    if (heapUsedMB > memoryLimitMB * 0.8) {
-      console.warn('🚨 ВЫСОКАЯ ЗАГРУЗКА ПАМЯТИ:', {
-        используется: heapUsedMB + 'MB',
-        лимит: memoryLimitMB + 'MB'
-      });
-
+    // ТОЛЬКО КРИТИЧЕСКАЯ ПРОВЕРКА
+    if (heapUsedMB > MEMORY_LIMIT / 1024 / 1024 * 0.85) {
+      console.warn('🚨 ВЫСОКАЯ ЗАГРУЗКА ПАМЯТИ:', heapUsedMB + 'MB');
       quickCache.emergencyCleanup();
       if (global.gc) global.gc();
     }
-
-    // Логирование статистики раз в 5 минут
-    if (Date.now() % 300000 < 5000) {
-      const stats = quickCache.getStats();
-      console.log('📊 Статистика кэша:', stats);
-    }
-
-  }, 120000); // 🚀 Увеличить до 2 минут
+  }, 300000); // 5 минут вместо 2
 }
 
 function stopMonitoringIntervals() {
@@ -577,13 +545,11 @@ const app = express();
 
 const rateLimit = require('express-rate-limit');
 
+// 🔥 УПРОЩЕННЫЕ ЛИМИТЕРЫ
 const heavyLimiter = rateLimit({
   windowMs: 1 * 60 * 1000,
   max: 100,
-  message: {
-    error: "Слишком много запросов, попробуйте позже",
-    retryAfter: 60
-  },
+  message: { error: "Слишком много запросов" },
   standardHeaders: true,
   legacyHeaders: false
 });
@@ -596,15 +562,36 @@ const apiLimiter = rateLimit({
 });
 
 const pingLimiter = rateLimit({
-  windowMs: 1000, // 1 секунда
-  max: 100, // максимум 100 запросов в секунду
+  windowMs: 1000,
+  max: 1000, // 🚀 УВЕЛИЧЬТЕ ДО 1000
   message: { error: "Too many pings" },
+  skip: (req) => req.ip === '127.0.0.1',
   standardHeaders: true
 });
 
+// 🔥 ПРИМЕНЕНИЕ ЛИМИТЕРОВ
 app.use("/ping", pingLimiter);
 app.use("/light-ping", pingLimiter);
 app.use("/micro-ping", pingLimiter);
+app.use("/nanoping", pingLimiter);
+
+// 🔥 СУПЕР-БЫСТРЫЕ PING ЭНДПОИНТЫ (ДОБАВЬТЕ В НАЧАЛО)
+app.get("/ping", (req, res) => {
+  res.setHeader('Content-Type', 'application/json');
+  res.end(`{"p":${Date.now()},"s":"ok"}`);
+});
+
+app.get("/light-ping", (req, res) => {
+  res.end(Date.now().toString());
+});
+
+app.get("/micro-ping", (req, res) => {
+  res.end("ok");
+});
+
+app.get("/nanoping", (req, res) => {
+  res.status(200).end();
+});
 
 app.get("/health", (req, res) => {
   res.json({
@@ -614,30 +601,15 @@ app.get("/health", (req, res) => {
   });
 });
 
-
-app.get("/ping", (req, res) => {
-  res.setHeader('Content-Type', 'application/json');
-  res.end(`{"p":${Date.now()},"s":"ok"}`);
-});
-
-app.get("/light-ping", (req, res) => {
-  // 🚀 ЕЩЕ БЫСТРЕЕ - только timestamp
-  res.end(Date.now().toString());
-});
-
-app.get("/micro-ping", (req, res) => {
-  // 🚀 СУПЕР-МИКРО - только "ok"
-  res.end("ok");
-});
-
-app.get("/nanoping", (req, res) => {
-  // 🚀 НАНО-ПИНГ - пустой ответ 200
-  res.status(200).end();
-});
-
-// 🔥 ИСПРАВЛЕНИЕ 5: MIDDLEWARE ОГРАНИЧЕНИЯ СОЕДИНЕНИЙ
+// 🔥 ЕДИНЫЙ УПРОЩЕННЫЙ MIDDLEWARE ДЛЯ ВСЕХ ЗАПРОСОВ
 app.use((req, res, next) => {
-  // ✅ ВКЛЮЧИТЬ ВСЕ эндпоинты в лимит
+  // ✅ Пропускаем ВСЕ легкие эндпоинты из ограничений и мониторинга
+  const lightEndpoints = ['/ping', '/light-ping', '/micro-ping', '/nanoping', '/health'];
+  if (lightEndpoints.includes(req.url)) {
+    return next();
+  }
+
+  // ✅ Ограничение соединений только для тяжелых эндпоинтов
   if (activeConnections >= MAX_CONCURRENT_CONNECTIONS) {
     return res.status(503).json({
       error: "Server busy",
@@ -646,23 +618,35 @@ app.use((req, res, next) => {
   }
 
   activeConnections++;
-
   res.on('finish', () => {
     activeConnections--;
+  });
+
+  // ✅ Упрощенный мониторинг только для тяжелых запросов
+  performanceMetrics.requests++;
+  const start = Date.now();
+
+  res.on('finish', () => {
+    const duration = Date.now() - start;
+    if (duration > 3000) {
+      performanceMetrics.slowRequests++;
+    }
   });
 
   next();
 });
 
+// 🔥 ОСНОВНЫЕ MIDDLEWARE
 app.use(cors());
-app.use(express.json());
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
+// 🔥 ПРИМЕНЕНИЕ ЛИМИТЕРОВ ДЛЯ ТЯЖЕЛЫХ ЭНДПОИНТОВ
 app.use("/send-event-notification", heavyLimiter);
 app.use("/generate-upload-url", heavyLimiter);
 app.use("/news", apiLimiter);
 app.use("/send-message", apiLimiter);
+
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -946,37 +930,6 @@ const performanceMetrics = {
   cacheMisses: 0,
   startTime: Date.now()
 };
-
-app.use((req, res, next) => {
-  if (req.url === '/health' || req.url === '/ping' || req.url === '/metrics' ||
-      req.url === '/light-ping' || req.url === '/load-metrics') {
-    return next();
-  }
-
-  performanceMetrics.requests++;
-  const start = Date.now();
-  const requestId = Math.random().toString(36).substring(7);
-
-  if (process.env.NODE_ENV === 'development') {
-    console.log(`📨 [${requestId}] ${req.method} ${req.url} - Начало`);
-  }
-
-  res.on('finish', () => {
-    const duration = Date.now() - start;
-    const isSlow = duration > 3000;
-
-    if (isSlow) {
-      performanceMetrics.slowRequests++;
-      console.warn(`🐌 [${requestId}] МЕДЛЕННО: ${req.method} ${req.url} - ${duration}мс`);
-    }
-
-    if (process.env.NODE_ENV === 'development' || duration > 1000) {
-      console.log(`✅ [${requestId}] ${req.method} ${req.url} - ${duration}мс`);
-    }
-  });
-
-  next();
-});
 
 // ==================== ВСЕ ЭНДПОИНТЫ ====================
 
