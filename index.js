@@ -722,10 +722,10 @@ function startMainServer() {
 
   const warmupLimiter = rateLimit({
     windowMs: 60000, // 1 минута
-    max: 5, // максимум 5 запросов в минуту
+    max: 10, // 🔥 УВЕЛИЧИТЬ ДО 10 запросов в минуту
     message: { error: "Слишком много запросов разогрева" },
     standardHeaders: true,
-    skip: (req) => req.ip === '127.0.0.1' // разрешить локальные запросы
+    skip: (req) => req.ip === '127.0.0.1' || req.headers['x-health-check'] === 'true'
   });
 
   // 🔥 ПРИМЕНЕНИЕ ЛИМИТЕРОВ
@@ -2846,40 +2846,37 @@ function startMainServer() {
   }
 
   // Внешний keep-alive для Render.com
-  function startExternalKeepAlive() {
-    if (!process.env.RENDER_EXTERNAL_URL) return;
+function startExternalKeepAlive() {
+  if (!process.env.RENDER_EXTERNAL_URL) return;
 
-    console.log('🌐 Внешняя keep-alive система запущена');
+  console.log('🌐 АКТИВИРОВАН СУПЕР-АГРЕССИВНЫЙ KEEP-ALIVE ДЛЯ RENDER.COM');
 
-    const externalUrl = process.env.RENDER_EXTERNAL_URL;
-    let externalFailures = 0;
+  const externalUrl = process.env.RENDER_EXTERNAL_URL;
 
-    setInterval(() => {
-      const startTime = Date.now();
-      const checkId = Math.random().toString(36).substring(2, 8);
+  // 🔥 ОСНОВНОЙ ИНТЕРВАЛ - КАЖДЫЕ 20 СЕКУНД
+  setInterval(() => {
+    const urls = ['/nanoping', '/micro-ping', '/light-ping', '/health'];
 
-      const req = require('https').request(externalUrl + '/micro-ping', {
-        timeout: 10000
-      }, (res) => {
-        const duration = Date.now() - startTime;
-        if (externalFailures > 0) {
-          console.log(`🌐 [${checkId}] Внешнее соединение восстановлено: ${duration}ms`);
-          externalFailures = 0;
-        }
-      });
+    urls.forEach((url, index) => {
+      setTimeout(() => {
+        require('https').request(externalUrl + url, {
+          timeout: 5000
+        }, (res) => {
+          // Тихий успех - не засоряем логи
+        }).on('error', () => {
+          // Тихая ошибка
+        }).end();
+      }, index * 1000); // Распределяем запросы
+    });
+  }, 20 * 1000); // 20 секунд
 
-      req.on('error', (err) => {
-        externalFailures++;
-        console.log(`🌐 [${checkId}] Внешний keep-alive ошибка: ${err.message} (${externalFailures})`);
-      });
+  // 🔥 ДОПОЛНИТЕЛЬНЫЙ БЫСТРЫЙ PING КАЖДЫЕ 10 СЕКУНД
+  setInterval(() => {
+    require('https').request(externalUrl + '/nanoping', {
+      timeout: 3000
+    }, () => {}).end();
+  }, 10 * 1000);
 
-      req.on('timeout', () => {
-        externalFailures++;
-        console.log(`🌐 [${checkId}] Внешний keep-alive таймаут (${externalFailures})`);
-        req.destroy();
-      });
-
-      req.end();
-    }, 3.5 * 60 * 1000); // Каждые 3.5 минуты
-  }
+  console.log('✅ Агрессивный keep-alive запущен: запросы каждые 10-20 секунд');
+}
 }
