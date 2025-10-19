@@ -628,11 +628,20 @@ function startMainServer() {
     standardHeaders: true
   });
 
+  const warmupLimiter = rateLimit({
+    windowMs: 60000, // 1 минута
+    max: 5, // максимум 5 запросов в минуту
+    message: { error: "Слишком много запросов разогрева" },
+    standardHeaders: true,
+    skip: (req) => req.ip === '127.0.0.1' // разрешить локальные запросы
+  });
+
   // 🔥 ПРИМЕНЕНИЕ ЛИМИТЕРОВ
   app.use("/ping", pingLimiter);
   app.use("/light-ping", pingLimiter);
   app.use("/micro-ping", pingLimiter);
   app.use("/nanoping", pingLimiter);
+  app.use("/warmup-cache", warmupLimiter);
 
   // 🔥 СУПЕР-БЫСТРЫЕ PING ЭНДПОИНТЫ С ПРИОРИТЕТОМ
   app.get("/ping", (req, res) => {
@@ -2033,61 +2042,111 @@ function startMainServer() {
     return notification;
   }
 
-  // ==================== HEALTH CHECKS И МОНИТОРИНГ ====================
-  app.get("/warmup-cache", async (req, res) => {
-    const startTime = Date.now();
-    const requestId = Math.random().toString(36).substring(2, 8);
+ // ==================== HEALTH CHECKS И МОНИТОРИНГ ====================
 
-    console.log(`🔥 [${requestId}] GET /warmup-cache - Запрос от JMeter`);
+ // 🔥 ЗАЩИТА ОТ ЧАСТЫХ ЗАПРОСОВ WARMUP
+ let lastWarmupTime = 0;
+ const WARMUP_COOLDOWN = 30000; // 30 секунд между разогревами
+ let isWarmupInProgress = false;
 
-    try {
-      const initialStats = quickCache.getStats();
+ app.get("/warmup-cache", async (req, res) => {
+   const startTime = Date.now();
+   const requestId = Math.random().toString(36).substring(2, 8);
 
-      res.json({
-        success: true,
-        requestId: requestId,
-        message: "Запрос на разогрев кэша принят",
-        initialCache: {
-          size: initialStats.size,
-          hitRate: initialStats.hitRate,
-          memory: initialStats.memoryUsage
-        },
-        responseTime: `${Date.now() - startTime}ms`,
-        timestamp: Date.now(),
-        note: "Кэш разогревается в фоновом режиме"
-      });
+   console.log(`🔥 [${requestId}] GET /warmup-cache - Запрос от ${req.ip || 'unknown'}`);
 
-      setTimeout(async () => {
-        try {
-          console.log(`🔥 [${requestId}] Фоновый разогрев кэша...`);
+   // 🔒 ПРОВЕРКА ЧАСТОТЫ ЗАПРОСОВ
+   const now = Date.now();
+   const timeSinceLastWarmup = now - lastWarmupTime;
 
-          const warmupStart = Date.now();
+   if (isWarmupInProgress) {
+     console.log(`⏳ [${requestId}] Разогрев уже выполняется, пропускаем...`);
+     const stats = quickCache.getStats();
+     return res.json({
+       success: true,
+       requestId: requestId,
+       message: "Разогрев кэша уже выполняется",
+       status: "in_progress",
+       cache: stats,
+       responseTime: `${Date.now() - startTime}ms`
+     });
+   }
 
-          await Promise.allSettled([
-            getGroupsStructureWithCache(),
-          ]);
+   if (timeSinceLastWarmup < WARMUP_COOLDOWN) {
+     const remainingCooldown = Math.ceil((WARMUP_COOLDOWN - timeSinceLastWarmup) / 1000);
+     console.log(`⏳ [${requestId}] Слишком частый запрос, cooldown: ${remainingCooldown}с`);
+     const stats = quickCache.getStats();
+     return res.json({
+       success: true,
+       requestId: requestId,
+       message: `Кэш уже разогрет. Следующий разогрев через ${remainingCooldown}с`,
+       cooldown: remainingCooldown,
+       cache: stats,
+       responseTime: `${Date.now() - startTime}ms`
+     });
+   }
 
-          const warmupTime = Date.now() - warmupStart;
-          const finalStats = quickCache.getStats();
+   try {
+     const initialStats = quickCache.getStats();
 
-          console.log(`✅ [${requestId}] Фоновый разогрев завершен за ${warmupTime}ms`);
-          console.log(`📊 [${requestId}] Кэш: ${finalStats.size} записей, HitRate: ${finalStats.hitRate}`);
+     // 🔒 БЛОКИРУЕМ ПОВТОРНЫЕ ВЫЗОВЫ
+     isWarmupInProgress = true;
+     lastWarmupTime = now;
 
-        } catch (error) {
-          console.error(`❌ [${requestId}] Ошибка фонового разогрева:`, error.message);
-        }
-      }, 100);
+     res.json({
+       success: true,
+       requestId: requestId,
+       message: "Запрос на разогрев кэша принят",
+       initialCache: {
+         size: initialStats.size,
+         hitRate: initialStats.hitRate,
+         memory: initialStats.memoryUsage
+       },
+       responseTime: `${Date.now() - startTime}ms`,
+       timestamp: now,
+       note: "Кэш разогревается в фоновом режиме",
+       nextAvailable: new Date(now + WARMUP_COOLDOWN).toISOString()
+     });
 
-    } catch (error) {
-      console.error(`❌ [${requestId}] Ошибка warmup-cache:`, error);
-      res.status(500).json({
-        success: false,
-        requestId: requestId,
-        error: error.message,
-        responseTime: `${Date.now() - startTime}ms`
-      });
-    }
-  });
+     // 🔥 ФОНОВЫЙ РАЗОГРЕВ С ЗАЩИТОЙ
+     setTimeout(async () => {
+       try {
+         console.log(`🔥 [${requestId}] Фоновый разогрев кэша...`);
+
+         const warmupStart = Date.now();
+
+         // ОГРАНИЧИВАЕМ ПАРАЛЛЕЛЬНЫЕ ВЫЗОВЫ
+         await Promise.allSettled([
+           getGroupsStructureWithCache(),
+         ]);
+
+         const warmupTime = Date.now() - warmupStart;
+         const finalStats = quickCache.getStats();
+
+         console.log(`✅ [${requestId}] Фоновый разогрев завершен за ${warmupTime}ms`);
+         console.log(`📊 [${requestId}] Кэш: ${finalStats.size} записей, HitRate: ${finalStats.hitRate}`);
+
+       } catch (error) {
+         console.error(`❌ [${requestId}] Ошибка фонового разогрева:`, error.message);
+       } finally {
+         // ✅ РАЗБЛОКИРОВКА В ЛЮБОМ СЛУЧАЕ
+         isWarmupInProgress = false;
+       }
+     }, 100);
+
+   } catch (error) {
+     // ✅ РАЗБЛОКИРОВКА ПРИ ОШИБКЕ
+     isWarmupInProgress = false;
+
+     console.error(`❌ [${requestId}] Ошибка warmup-cache:`, error);
+     res.status(500).json({
+       success: false,
+       requestId: requestId,
+       error: error.message,
+       responseTime: `${Date.now() - startTime}ms`
+     });
+   }
+ });
 
   app.post("/warmup-cache", async (req, res) => {
     try {
