@@ -1951,7 +1951,7 @@ function startMainServer() {
   }
 
   // ==================== HEALTH CHECKS И МОНИТОРИНГ ====================
-  // 🔥 ОПТИМАЛЬНЫЙ WARMUP ДЛЯ JMETER И ПРОДАКШЕНА
+
   app.get("/warmup-cache", async (req, res) => {
     const startTime = Date.now();
     const requestId = Math.random().toString(36).substring(2, 8);
@@ -2342,6 +2342,37 @@ function startMainServer() {
       eventLoop: eventLoopLag + 'ms',
       loadavg: os.loadavg(),
       freemem: Math.round(os.freemem() / 1024 / 1024) + 'MB'
+    };
+
+    res.json(stats);
+  });
+
+  // ДОБАВЬТЕ ПЕРЕД app.get("/", ...):
+  app.get("/memory-debug", (req, res) => {
+    const memory = process.memoryUsage();
+    const stats = {
+      timestamp: Date.now(),
+      uptime: process.uptime(),
+      memory: {
+        heapUsed: Math.round(memory.heapUsed / 1024 / 1024) + 'MB',
+        heapTotal: Math.round(memory.heapTotal / 1024 / 1024) + 'MB',
+        rss: Math.round(memory.rss / 1024 / 1024) + 'MB',
+        external: Math.round(memory.external / 1024 / 1024) + 'MB'
+      },
+      connections: {
+        active: activeConnections,
+        max: MAX_CONCURRENT_CONNECTIONS,
+        firebase: connectionCounters.firebase,
+        s3: connectionCounters.s3
+      },
+      cache: quickCache.getStats(),
+      eventLoop: eventLoopLag + 'ms',
+      loadavg: os.loadavg(),
+      freemem: Math.round(os.freemem() / 1024 / 1024) + 'MB',
+      // 🔥 ДОПОЛНИТЕЛЬНАЯ ДИАГНОСТИКА
+      gc: global.gc ? 'available' : 'unavailable',
+      nodeVersion: process.version,
+      platform: process.platform
     };
 
     res.json(stats);
