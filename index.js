@@ -33,6 +33,17 @@ tester.once('listening', () => {
 
 tester.listen(PORT, '0.0.0.0');
 
+let eventLoopLag = 0;
+setInterval(() => {
+  const start = Date.now();
+  setImmediate(() => {
+    eventLoopLag = Date.now() - start;
+    if (eventLoopLag > 50) {
+      console.warn(`⚠️ EVENT LOOP LAG: ${eventLoopLag}ms`);
+    }
+  });
+}, 5000);
+
 function startMainServer() {
 
 // 🔥 ИСПРАВЛЕНИЕ 1: CIRCUIT BREAKER ДЛЯ FIREBASE
@@ -86,7 +97,7 @@ async function safeFirebaseOperation(operation, operationName) {
 }
 
 // 🔥 ИСПРАВЛЕНИЕ 2: ЛИМИТ ОДНОВРЕМЕННЫХ СОЕДИНЕНИЙ
-const MAX_CONCURRENT_CONNECTIONS = 100;
+const MAX_CONCURRENT_CONNECTIONS = 200;
 let activeConnections = 0;
 
 let lastActiveConnections = 0;
@@ -493,7 +504,7 @@ const withStrictTimeout = (promise, timeoutMs, operationName = 'Operation') => {
   return withRetry(() => promise, operationName, timeoutMs, 1);
 };
 
-const MEMORY_LIMIT = 800 * 1024 * 1024;
+const MEMORY_LIMIT = 1600 * 1024 * 1024;
 let emergencyMode = false;
 
 let memoryMonitorInterval = null;
@@ -577,6 +588,16 @@ const apiLimiter = rateLimit({
   legacyHeaders: false
 });
 
+const pingLimiter = rateLimit({
+  windowMs: 1000, // 1 секунда
+  max: 100, // максимум 100 запросов в секунду
+  message: { error: "Too many pings" },
+  standardHeaders: true
+});
+
+app.use("/ping", pingLimiter);
+app.use("/light-ping", pingLimiter);
+app.use("/micro-ping", pingLimiter);
 
 app.get("/health", (req, res) => {
   res.json({
@@ -586,24 +607,25 @@ app.get("/health", (req, res) => {
   });
 });
 
-// 🔥 ИСПРАВЛЕНИЕ 6: УЛЬТРА-БЫСТРЫЙ PING (1-2ms)
+
 app.get("/ping", (req, res) => {
-  // 🚀 СУПЕР-ЛЕГКИЙ ответ без логики, без кэша, без вычислений
-  res.json({
-    pong: Date.now(),
-    status: "healthy",
-    timestamp: Date.now()
-  });
+  res.setHeader('Content-Type', 'application/json');
+  res.end(`{"p":${Date.now()},"s":"ok"}`);
 });
 
 app.get("/light-ping", (req, res) => {
-  // 🚀 Такой же легкий
-  res.json({
-    pong: Date.now(),
-    status: "alive",
-    version: "3.0.0-ultra-fast",
-    timestamp: Date.now()
-  });
+  // 🚀 ЕЩЕ БЫСТРЕЕ - только timestamp
+  res.end(Date.now().toString());
+});
+
+app.get("/micro-ping", (req, res) => {
+  // 🚀 СУПЕР-МИКРО - только "ok"
+  res.end("ok");
+});
+
+app.get("/nanoping", (req, res) => {
+  // 🚀 НАНО-ПИНГ - пустой ответ 200
+  res.status(200).end();
 });
 
 // 🔥 ИСПРАВЛЕНИЕ 5: MIDDLEWARE ОГРАНИЧЕНИЯ СОЕДИНЕНИЙ
@@ -681,10 +703,10 @@ try {
     databaseURL: process.env.FIREBASE_DB_URL,
     httpAgent: new https.Agent({
       keepAlive: true,
-      maxSockets: 100,
-      maxFreeSockets: 20,
-      timeout: 30000,
-      freeSocketTimeout: 30000
+      maxSockets: 200,
+      maxFreeSockets: 50,
+      timeout: 10000,
+      freeSocketTimeout: 10000
     })
   };
 
@@ -2354,6 +2376,33 @@ app.post("/reset-cache", (req, res) => {
       quickCache: quickCache.getStats()
     }
   });
+});
+
+// ДОБАВИТЬ НОВЫЙ ЭНДПОИНТ
+app.get("/system-debug", (req, res) => {
+  const memory = process.memoryUsage();
+  const stats = {
+    timestamp: Date.now(),
+    uptime: process.uptime(),
+    memory: {
+      heapUsed: Math.round(memory.heapUsed / 1024 / 1024) + 'MB',
+      heapTotal: Math.round(memory.heapTotal / 1024 / 1024) + 'MB',
+      rss: Math.round(memory.rss / 1024 / 1024) + 'MB',
+      external: Math.round(memory.external / 1024 / 1024) + 'MB'
+    },
+    connections: {
+      active: activeConnections,
+      max: MAX_CONCURRENT_CONNECTIONS,
+      firebase: connectionCounters.firebase,
+      s3: connectionCounters.s3
+    },
+    cache: quickCache.getStats(),
+    eventLoop: eventLoopLag + 'ms',
+    loadavg: os.loadavg(),
+    freemem: Math.round(os.freemem() / 1024 / 1024) + 'MB'
+  };
+
+  res.json(stats);
 });
 
 app.get("/", (req, res) => {
