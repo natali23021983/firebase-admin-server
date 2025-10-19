@@ -26,15 +26,86 @@ let isStabilizing = false;
 let emergencyMode = false;
 
 // 🔥 УЛУЧШЕННЫЙ МОНИТОРИНГ EVENT LOOP
+// 🔥 АГРЕССИВНЫЙ МОНИТОРИНГ EVENT LOOP С ЗАЩИТОЙ ОТ ЗАМИРАНИЯ
+const EVENT_LOOP_THRESHOLD = 50; // ms
+let eventLoopBlocked = false;
+let consecutiveHighLag = 0;
+
 const monitorEventLoop = () => {
   const start = Date.now();
   setImmediate(() => {
-    eventLoopLag = Date.now() - start;
-    if (eventLoopLag > 100 && !isStabilizing) {
-      stabilizeSystem();
+    const lag = Date.now() - start;
+    eventLoopLag = lag;
+
+    // Обнаружение блокировки event loop
+    if (lag > EVENT_LOOP_THRESHOLD) {
+      consecutiveHighLag++;
+
+      if (consecutiveHighLag >= 3 && !eventLoopBlocked) {
+        eventLoopBlocked = true;
+        console.log(`🚨 CRITICAL: EVENT LOOP BLOCKED (${lag}ms, ${consecutiveHighLag} раз подряд)`);
+        emergencyEventLoopRecovery();
+      } else if (consecutiveHighLag >= 2) {
+        console.log(`⚠️ WARNING: Event loop lag ${lag}ms (${consecutiveHighLag}/3)`);
+        if (!isStabilizing) {
+          stabilizeSystem();
+        }
+      }
+    } else {
+      if (consecutiveHighLag > 0) {
+        console.log(`✅ Event loop восстановлен: ${lag}ms`);
+        consecutiveHighLag = 0;
+        eventLoopBlocked = false;
+      }
     }
   });
 };
+
+// Более частый мониторинг
+setInterval(monitorEventLoop, 10000);
+
+// Функция экстренного восстановления
+function emergencyEventLoopRecovery() {
+  console.log('🚨 АКТИВИРОВАНА ЭКСТРЕННАЯ ОЧИСТКА EVENT LOOP...');
+
+  // 1. Экстренная очистка кэша
+  if (global.quickCache) {
+    try {
+      const deleted = global.quickCache.emergencyCleanup();
+      console.log(`🗑️ Экстренная очистка кэша: удалено ${deleted} записей`);
+    } catch (e) {
+      console.error('❌ Ошибка экстренной очистки кэша:', e.message);
+    }
+  }
+
+  // 2. Принудительный сбор мусора
+  if (global.gc) {
+    try {
+      global.gc();
+      console.log('🧹 Принудительный сбор мусора выполнен');
+    } catch (e) {
+      console.error('❌ Ошибка GC:', e.message);
+    }
+  }
+
+  // 3. Очистка таймеров (кроме критических)
+  const activeTimers = [];
+  if (global.performanceMonitorInterval) {
+    activeTimers.push(global.performanceMonitorInterval);
+  }
+  if (global.memoryMonitorInterval) {
+    activeTimers.push(global.memoryMonitorInterval);
+  }
+
+  console.log(`⏰ Активные таймеры: ${activeTimers.length}`);
+
+  // 4. Сброс состояния
+  setTimeout(() => {
+    eventLoopBlocked = false;
+    consecutiveHighLag = 0;
+    console.log('✅ Аварийный режим сброшен');
+  }, 10000);
+}
 
 setInterval(monitorEventLoop, 30000);
 
@@ -648,6 +719,39 @@ function startMainServer() {
     res.setHeader('Content-Type', 'application/json');
     res.setHeader('X-Response-Priority', 'high');
     res.end(`{"p":${Date.now()},"s":"ok"}`);
+  });
+
+  // 🔥 СПЕЦИАЛЬНЫЙ HEALTH CHECK ДЛЯ МОНИТОРИНГА
+  app.get("/health-check", (req, res) => {
+    const start = Date.now();
+
+    // Быстрая проверка Firebase
+    db.ref('.info/connected').once('value')
+      .then(() => {
+        const duration = Date.now() - start;
+        res.json({
+          status: "healthy",
+          timestamp: Date.now(),
+          responseTime: `${duration}ms`,
+          eventLoopLag: `${eventLoopLag}ms`,
+          activeConnections: activeConnections,
+          memory: {
+            heapUsed: Math.round(process.memoryUsage().heapUsed / 1024 / 1024) + 'MB',
+            rss: Math.round(process.memoryUsage().rss / 1024 / 1024) + 'MB'
+          },
+          cache: quickCache ? {
+            size: quickCache.cache.size,
+            hitRate: quickCache.getStats().hitRate
+          } : null
+        });
+      })
+      .catch(err => {
+        res.status(503).json({
+          status: "degraded",
+          error: err.message,
+          timestamp: Date.now()
+        });
+      });
   });
 
   app.get("/light-ping", (req, res) => {
@@ -2520,6 +2624,10 @@ function startMainServer() {
 
     startMonitoringIntervals();
 
+    // 🔥 ЗАПУСК СИСТЕМ ЗАЩИТЫ ОТ ЗАМИРАНИЯ
+    startEnhancedKeepAlive();
+    startExternalKeepAlive();
+
     setTimeout(preloadCriticalData, 5000);
   });
 
@@ -2612,4 +2720,169 @@ function startMainServer() {
   console.log('   ✅ Улучшенная обработка ошибок');
   console.log('   ✅ Проактивный мониторинг ресурсов');
   console.log('   ✅ ВСЕ 25+ эндпоинтов сохранены и оптимизированы');
+
+  // ==================== УЛУЧШЕННАЯ СИСТЕМА KEEP-ALIVE ====================
+  function startEnhancedKeepAlive() {
+    console.log('🔔 Улучшенная keep-alive система запущена');
+
+    let consecutiveFailures = 0;
+    const MAX_CONSECUTIVE_FAILURES = 3;
+    let isRecoveryInProgress = false;
+
+    const performHealthCheck = () => {
+      if (isRecoveryInProgress) {
+        return; // Пропускаем если уже восстанавливаемся
+      }
+
+      const startTime = Date.now();
+      const checkId = Math.random().toString(36).substring(2, 8);
+
+      const options = {
+        hostname: 'localhost',
+        port: PORT,
+        path: '/deep-ping',
+        method: 'GET',
+        timeout: 15000, // Увеличиваем таймаут
+        headers: {
+          'X-Health-Check': 'true',
+          'X-Check-ID': checkId
+        }
+      };
+
+      const req = require('http').request(options, (res) => {
+        const duration = Date.now() - startTime;
+        const data = [];
+
+        res.on('data', chunk => data.push(chunk));
+        res.on('end', () => {
+          if (res.statusCode === 200) {
+            if (consecutiveFailures > 0) {
+              console.log(`✅ [${checkId}] Восстановление после ${consecutiveFailures} сбоев: ${duration}ms`);
+              consecutiveFailures = 0;
+            }
+
+            // Анализ времени ответа
+            if (duration > 8000) {
+              console.log(`🐌 [${checkId}] Медленный ответ (${duration}ms), активируем очистку...`);
+              if (!isStabilizing) {
+                stabilizeSystem();
+              }
+            } else if (duration > 3000) {
+              console.log(`⚠️ [${checkId}] Предупреждение: ответ ${duration}ms`);
+            }
+          } else {
+            handleHealthCheckFailure(`HTTP ${res.statusCode}`, checkId, duration);
+          }
+        });
+      });
+
+      req.on('error', (err) => {
+        handleHealthCheckFailure(err.message, checkId, Date.now() - startTime);
+      });
+
+      req.on('timeout', () => {
+        console.log(`⏰ [${checkId}] Health check timeout после ${Date.now() - startTime}ms`);
+        req.destroy();
+        handleHealthCheckFailure('timeout', checkId, Date.now() - startTime);
+      });
+
+      req.end();
+    };
+
+    function handleHealthCheckFailure(reason, checkId, duration) {
+      consecutiveFailures++;
+      console.log(`❌ [${checkId}] Health check失败: ${reason} (${duration}ms), сбоев: ${consecutiveFailures}/${MAX_CONSECUTIVE_FAILURES}`);
+
+      if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES && !isRecoveryInProgress) {
+        isRecoveryInProgress = true;
+        console.log('🚨 АКТИВИРУЕМ АВАРИЙНОЕ ВОССТАНОВЛЕНИЕ...');
+        emergencyServerRecovery();
+      }
+    }
+
+    function emergencyServerRecovery() {
+      console.log('🔄 АВАРИЙНОЕ ВОССТАНОВЛЕНИЕ СЕРВЕРА...');
+
+      // 1. Aggressive cache cleanup
+      if (global.quickCache) {
+        try {
+          global.quickCache.cache.clear();
+          console.log('🗑️ Полная очистка кэша выполнена');
+        } catch (e) {
+          console.error('❌ Ошибка очистки кэша:', e.message);
+        }
+      }
+
+      // 2. Force GC
+      if (global.gc) {
+        try {
+          global.gc();
+          console.log('🧹 Аварийный GC выполнен');
+        } catch (e) {}
+      }
+
+      // 3. Reset connections
+      activeConnections = Math.max(0, activeConnections - 10);
+
+      console.log('✅ Аварийное восстановление завершено');
+
+      // 4. Reset recovery state
+      setTimeout(() => {
+        isRecoveryInProgress = false;
+        consecutiveFailures = 0;
+        console.log('🔄 Система восстановления готова к новым проверкам');
+      }, 30000);
+    }
+
+    // Запускаем немедленно
+    setTimeout(performHealthCheck, 5000);
+
+    // Основной интервал - каждые 2 минуты
+    setInterval(performHealthCheck, 2 * 60 * 1000);
+
+    // Быстрая проверка каждые 30 секунд
+    setInterval(() => {
+      if (consecutiveFailures > 0) {
+        performHealthCheck(); // Чаще проверяем при проблемах
+      }
+    }, 30000);
+  }
+
+  // Внешний keep-alive для Render.com
+  function startExternalKeepAlive() {
+    if (!process.env.RENDER_EXTERNAL_URL) return;
+
+    console.log('🌐 Внешняя keep-alive система запущена');
+
+    const externalUrl = process.env.RENDER_EXTERNAL_URL;
+    let externalFailures = 0;
+
+    setInterval(() => {
+      const startTime = Date.now();
+      const checkId = Math.random().toString(36).substring(2, 8);
+
+      const req = require('https').request(externalUrl + '/micro-ping', {
+        timeout: 10000
+      }, (res) => {
+        const duration = Date.now() - startTime;
+        if (externalFailures > 0) {
+          console.log(`🌐 [${checkId}] Внешнее соединение восстановлено: ${duration}ms`);
+          externalFailures = 0;
+        }
+      });
+
+      req.on('error', (err) => {
+        externalFailures++;
+        console.log(`🌐 [${checkId}] Внешний keep-alive ошибка: ${err.message} (${externalFailures})`);
+      });
+
+      req.on('timeout', () => {
+        externalFailures++;
+        console.log(`🌐 [${checkId}] Внешний keep-alive таймаут (${externalFailures})`);
+        req.destroy();
+      });
+
+      req.end();
+    }, 3.5 * 60 * 1000); // Каждые 3.5 минуты
+  }
 }
