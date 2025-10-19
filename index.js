@@ -2449,9 +2449,6 @@ function startMainServer() {
 
     const KEEP_ALIVE_INTERVAL = 4 * 60 * 1000; // 4 минуты (Render.com спит после 5)
 
-    console.log(`🔔 СИСТЕМА АВТО-ПИНГА АКТИВИРОВАНА: каждые ${KEEP_ALIVE_INTERVAL / 60000} минут`);
-    console.log(`🔔 Предотвращение сна сервера на Render.com`);
-
     keepAliveInterval = setInterval(enhancedKeepAlivePing, KEEP_ALIVE_INTERVAL);
 
     setTimeout(enhancedKeepAlivePing, 30000);
@@ -2484,8 +2481,8 @@ function startMainServer() {
     console.log(`✅ Circuit breaker: включен`);
     console.log(`✅ HealthCache: УДАЛЕН (ускорение ping на 20,000x)`);
 
-    //startMonitoringIntervals();
-    startKeepAliveSystem();
+    startMonitoringIntervals();
+    //startKeepAliveSystem();
 
     console.log('🚀 Запуск предзагрузки критических данных...');
     setTimeout(preloadCriticalData, 10000);
