@@ -62,7 +62,7 @@ const monitorEventLoop = () => {
 };
 
 // Более частый мониторинг
-setInterval(monitorEventLoop, 10000);
+setInterval(monitorEventLoop, 60000);
 
 // Функция экстренного восстановления
 function emergencyEventLoopRecovery() {
@@ -268,7 +268,7 @@ function startMainServer() {
 
       this.cleanupInterval = setInterval(() => {
         this.adaptiveCleanup();
-      }, process.env.RENDER ? 300000 : 600000);
+      }, process.env.RENDER ? 600000 : 600000);
 
       console.log(`✅ Кэш инициализирован: maxSize=${maxSize}, maxMemory=${maxMemoryMB}MB`);
     }
@@ -558,14 +558,14 @@ function startMainServer() {
 
   console.log('🆕 Инициализация ОПТИМИЗИРОВАННОГО кэша для Render.com');
 
-  const cacheSize = process.env.RENDER ? 100 : 200;
-  const cacheMemory = process.env.RENDER ? 50 : 100;
+  const cacheSize = process.env.RENDER ? 50 : 200;
+  const cacheMemory = process.env.RENDER ? 25 : 100;
 
   const quickCache = new OptimizedLRUCache(cacheSize, cacheMemory);
   global.quickCache = quickCache;
   console.log('🔍 Оптимизированный кэш инициализирован:', quickCache.getStats());
 
-  const FIREBASE_TIMEOUT = process.env.RENDER ? 15000 : 30000;
+  const FIREBASE_TIMEOUT = process.env.RENDER ? 10000 : 30000;
   const S3_TIMEOUT = 30000;
   const RETRY_ATTEMPTS = 2;
   const RETRY_BASE_DELAY = 1000;
@@ -575,6 +575,27 @@ function startMainServer() {
     s3: 0,
     http: 0
   };
+
+  // Простая защита от перегрузки для Render.com
+  let renderProtectionMode = false;
+  setInterval(() => {
+    const memory = process.memoryUsage();
+    const usedMB = memory.heapUsed / 1024 / 1024;
+
+    if (usedMB > 300 && !renderProtectionMode) {
+      console.log('🚨 АКТИВИРОВАН РЕЖИМ ЗАЩИТЫ RENDER');
+      renderProtectionMode = true;
+
+      // Быстрая очистка
+      if (quickCache) quickCache.aggressiveCleanup();
+      if (global.gc) global.gc();
+
+      setTimeout(() => {
+        renderProtectionMode = false;
+        console.log('✅ Режим защиты деактивирован');
+      }, 60000);
+    }
+  }, 30000);
 
   const withRetry = async (operation, operationName = 'Operation', timeoutMs = FIREBASE_TIMEOUT, maxRetries = RETRY_ATTEMPTS) => {
     const counterType = operationName.includes('Firebase') ? 'firebase' :
@@ -723,35 +744,11 @@ function startMainServer() {
 
   // 🔥 СПЕЦИАЛЬНЫЙ HEALTH CHECK ДЛЯ МОНИТОРИНГА
   app.get("/health-check", (req, res) => {
-    const start = Date.now();
-
-    // Быстрая проверка Firebase
-    db.ref('.info/connected').once('value')
-      .then(() => {
-        const duration = Date.now() - start;
-        res.json({
-          status: "healthy",
-          timestamp: Date.now(),
-          responseTime: `${duration}ms`,
-          eventLoopLag: `${eventLoopLag}ms`,
-          activeConnections: activeConnections,
-          memory: {
-            heapUsed: Math.round(process.memoryUsage().heapUsed / 1024 / 1024) + 'MB',
-            rss: Math.round(process.memoryUsage().rss / 1024 / 1024) + 'MB'
-          },
-          cache: quickCache ? {
-            size: quickCache.cache.size,
-            hitRate: quickCache.getStats().hitRate
-          } : null
-        });
-      })
-      .catch(err => {
-        res.status(503).json({
-          status: "degraded",
-          error: err.message,
-          timestamp: Date.now()
-        });
-      });
+    res.json({
+      status: "healthy",
+      timestamp: Date.now(),
+      memory: Math.round(process.memoryUsage().heapUsed / 1024 / 1024) + 'MB'
+    });
   });
 
   app.get("/light-ping", (req, res) => {
