@@ -255,28 +255,35 @@ class OptimizedLRUCache {
     const now = Date.now();
     const priorities = ['low', 'medium', 'high'];
 
+    // 1. Сначала удаляем просроченные записи
     for (let [key, value] of this.cache.entries()) {
       if (now - value.timestamp > value.ttl) {
         this.cache.delete(key);
         this.stats.evictions++;
-        return;
+        if (this.cache.size < this.maxSize) return; // ✅ Останавливаемся когда места достаточно
       }
     }
 
-    for (const priority of priorities) {
-      for (let [key, value] of this.cache.entries()) {
-        if (value.priority === priority) {
-          this.cache.delete(key);
-          this.stats.evictions++;
-          return;
+    // 2. Если всё ещё нужно место, удаляем по приоритету
+    if (this.cache.size >= this.maxSize) {
+      for (const priority of priorities) {
+        for (let [key, value] of this.cache.entries()) {
+          if (value.priority === priority) {
+            this.cache.delete(key);
+            this.stats.evictions++;
+            if (this.cache.size < this.maxSize) return; // ✅ Останавливаемся когда места достаточно
+          }
         }
       }
     }
 
-    const firstKey = this.cache.keys().next().value;
-    if (firstKey) {
-      this.cache.delete(firstKey);
-      this.stats.evictions++;
+    // 3. Если всё ещё нужно место, удаляем самую старую запись
+    if (this.cache.size >= this.maxSize) {
+      const firstKey = this.cache.keys().next().value;
+      if (firstKey) {
+        this.cache.delete(firstKey);
+        this.stats.evictions++;
+      }
     }
   }
 
