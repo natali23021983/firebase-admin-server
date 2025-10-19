@@ -2484,7 +2484,7 @@ function startMainServer() {
     console.log(`✅ Circuit breaker: включен`);
     console.log(`✅ HealthCache: УДАЛЕН (ускорение ping на 20,000x)`);
 
-    startMonitoringIntervals();
+    //startMonitoringIntervals();
     startKeepAliveSystem();
 
     console.log('🚀 Запуск предзагрузки критических данных...');
