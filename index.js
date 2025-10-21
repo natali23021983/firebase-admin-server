@@ -695,6 +695,7 @@ function startMainServer() {
 
   // ==================== EXPRESS И СЕРВИСЫ ====================
   const app = express();
+  app.set('trust proxy', 1);
 
   // 🔥 ОПТИМИЗИРОВАННЫЕ ЛИМИТЕРЫ ДЛЯ RENDER.COM
   const heavyLimiter = rateLimit({
