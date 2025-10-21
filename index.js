@@ -1357,7 +1357,6 @@ function startMainServer() {
   });
 
   // 🔥 НОВОСТИ И СОБЫТИЯ
-  // 🔥 ИСПРАВЛЕННЫЙ ЭНДПОИНТ ДЛЯ РЕДАКТИРОВАНИЯ НОВОСТЕЙ
   app.put("/news", verifyToken, async (req, res) => {
     try {
       const { newsId, groupId, title, description, imagesToKeep = [], video } = req.body;
@@ -1512,6 +1511,46 @@ function startMainServer() {
       }
 
       console.error("Ошибка deleteNews:", err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 🔥 ДОБАВЬТЕ ЭТОТ КОД В СЕКЦИЮ "НОВОСТИ И СОБЫТИЯ"
+  app.get("/news", verifyToken, async (req, res) => {
+    try {
+      const { groupId } = req.query;
+      const userId = req.user.uid;
+
+      if (!groupId) {
+        return res.status(400).json({ error: "groupId обязателен" });
+      }
+
+      console.log(`📝 GET /news запрос для группы: ${groupId}, пользователь: ${userId}`);
+
+      // 🔥 ИСПОЛЬЗУЕМ КЭШИРОВАННЫЕ ДАННЫЕ
+      const newsData = await getNewsWithCache(groupId);
+
+      // Преобразуем объект в массив
+      const newsArray = Object.entries(newsData || {}).map(([id, news]) => ({
+        id,
+        ...news
+      }));
+
+      // Сортируем по времени (новые сначала)
+      newsArray.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+
+      console.log(`✅ Возвращаем ${newsArray.length} новостей для группы ${groupId}`);
+
+      res.json(newsArray);
+
+    } catch (err) {
+      global.performanceMetrics.errors++;
+
+      if (err.message.includes('timeout')) {
+        return res.status(408).json({ error: "Операция заняла слишком много времени" });
+      }
+
+      console.error("❌ Ошибка GET /news:", err);
       res.status(500).json({ error: err.message });
     }
   });
