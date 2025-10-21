@@ -1357,102 +1357,117 @@ function startMainServer() {
   });
 
   // 🔥 НОВОСТИ И СОБЫТИЯ
+  // 🔥 ИСПРАВЛЕННЫЙ ЭНДПОИНТ ДЛЯ РЕДАКТИРОВАНИЯ НОВОСТЕЙ
+  app.put("/news", verifyToken, async (req, res) => {
+    try {
+      const { newsId, groupId, title, description, imagesToKeep = [], video } = req.body;
+      const authorId = req.user.uid;
+
+      if (!newsId || !groupId || !title || !description) {
+        return res.status(400).json({ error: "newsId, groupId, title и description обязательны" });
+      }
+
+      const ref = db.ref(`news/${groupId}/${newsId}`);
+      const snap = await safeFirebaseOperation(
+        () => ref.once("value"),
+        'Редактирование новости'
+      );
+
+      const oldNews = snap.val();
+      if (!oldNews) {
+        return res.status(404).json({ error: "Новость не найдена" });
+      }
+
+      if (oldNews.authorId !== authorId) {
+        return res.status(403).json({ error: "Нет прав для редактирования этой новости" });
+      }
+
+      // 🔥 СОБИРАЕМ ВСЕ МЕДИАФАЙЛЫ
+      const mediaUrls = [...imagesToKeep];
+      if (video) {
+        mediaUrls.push(video);
+      }
+
+      // 🔥 ОПРЕДЕЛЯЕМ ФАЙЛЫ ДЛЯ УДАЛЕНИЯ
+      const oldUrls = oldNews.mediaUrls || [];
+      const keepSet = new Set(mediaUrls);
+      const toDelete = oldUrls.filter(url => !keepSet.has(url));
+
+      if (toDelete.length > 0) {
+        await deleteFromS3(toDelete);
+      }
+
+      // 🔥 ПОЛНОЕ ОБНОВЛЕНИЕ ДАННЫХ
+      const updatedData = {
+        id: newsId,
+        title: title.trim(),
+        description: description.trim(),
+        mediaUrls: mediaUrls,
+        authorId: oldNews.authorId, // Сохраняем оригинального автора
+        groupId: groupId,
+        timestamp: oldNews.timestamp, // Сохраняем оригинальное время создания
+        updatedAt: Date.now() // Добавляем время обновления
+      };
+
+      await ref.update(updatedData);
+
+      // 🔥 ОЧИСТКА КЭША ДЛЯ ЭТОЙ ГРУППЫ
+      quickCache.cache.delete(`news_${groupId}`);
+
+      // 🔥 ВОЗВРАЩАЕМ ПОЛНЫЕ ОБНОВЛЕННЫЕ ДАННЫЕ
+      return res.json({
+        success: true,
+        updated: true,
+        news: updatedData,
+        deletedFiles: toDelete.length
+      });
+
+    } catch (err) {
+      global.performanceMetrics.errors++;
+
+      if (err.message.includes('timeout')) {
+        return res.status(408).json({ error: "Операция заняла слишком много времени" });
+      }
+
+      console.error("❌ Ошибка PUT /news:", err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 🔥 ДОБАВЛЯЕМ ОТДЕЛЬНЫЙ POST ДЛЯ СОЗДАНИЯ НОВОСТЕЙ
   app.post("/news", verifyToken, async (req, res) => {
     try {
-      const { newsId, groupId, title, description, mediaUrls = [] } = req.body;
+      const { groupId, title, description, mediaUrls = [] } = req.body;
       const authorId = req.user.uid;
 
       if (!groupId || !title || !description) {
         return res.status(400).json({ error: "groupId, title и description обязательны" });
       }
 
-      if (newsId) {
-        const ref = db.ref(`news/${groupId}/${newsId}`);
-        const snap = await safeFirebaseOperation(
-          () => ref.once("value"),
-          'Редактирование новости'
-        );
-        const oldNews = snap.val();
-        if (!oldNews) return res.status(404).json({ error: "Новость не найдена" });
-        if (oldNews.authorId !== authorId) return res.status(403).json({ error: "Нет прав" });
-
-        const oldUrls = oldNews.mediaUrls || [];
-        const keepSet = new Set(mediaUrls);
-        const toDelete = oldUrls.filter(url => !keepSet.has(url));
-        await deleteFromS3(toDelete);
-
-        const newData = {
-          title,
-          description,
-          mediaUrls,
-          authorId,
-          timestamp: Date.now(),
-        };
-
-        await ref.update(newData);
-        quickCache.cache.delete(`news_${groupId}`);
-
-        return res.json({ success: true, updated: true });
-      }
-
       const id = uuidv4();
       const ref = db.ref(`news/${groupId}/${id}`);
 
       const data = {
-        title,
-        description,
+        id,
+        title: title.trim(),
+        description: description.trim(),
         mediaUrls,
         timestamp: Date.now(),
-        authorId
+        authorId,
+        groupId
       };
 
       await ref.set(data);
+
+      // 🔥 ОЧИСТКА КЭША
       quickCache.cache.delete(`news_${groupId}`);
 
-      return res.json({ success: true, id });
-
-    } catch (err) {
-      global.performanceMetrics.errors++;
-
-      if (err.message.includes('timeout')) {
-        return res.status(408).json({ error: "Операция заняла слишком много времени" });
-      }
-
-      console.error("Ошибка POST /news:", err);
-      res.status(500).json({ error: err.message });
-    }
-  });
-
-  app.get("/news", verifyToken, async (req, res) => {
-    try {
-      const groupId = req.query.groupId;
-      if (!groupId) {
-        return res.status(400).json({ error: "groupId обязателен" });
-      }
-
-      const newsData = await getNewsWithCache(groupId);
-
-      const newsList = Object.entries(newsData).map(([id, news]) => ({
+      return res.json({
+        success: true,
         id,
-        title: news.title,
-        description: news.description,
-        groupId: groupId,
-        authorId: news.authorId,
-        mediaUrls: news.mediaUrls || [],
-        timestamp: news.timestamp || 0
-      }));
-
-      newsList.sort((a, b) => b.timestamp - a.timestamp);
-
-      const cacheStatus = quickCache.get(`news_${groupId}`) ? 'hit' : 'miss';
-      res.set({
-        'X-Cache-Status': cacheStatus,
-        'X-Cache-Hits': quickCache.stats.hits,
-        'X-Cache-Misses': quickCache.stats.misses
+        news: data
       });
 
-      res.json(newsList);
-
     } catch (err) {
       global.performanceMetrics.errors++;
 
@@ -1460,7 +1475,7 @@ function startMainServer() {
         return res.status(408).json({ error: "Операция заняла слишком много времени" });
       }
 
-      console.error("Ошибка GET /news:", err);
+      console.error("❌ Ошибка POST /news:", err);
       res.status(500).json({ error: err.message });
     }
   });
