@@ -26,7 +26,6 @@ let isStabilizing = false;
 let emergencyMode = false;
 
 // 🔥 УЛУЧШЕННЫЙ МОНИТОРИНГ EVENT LOOP
-// 🔥 АГРЕССИВНЫЙ МОНИТОРИНГ EVENT LOOP С ЗАЩИТОЙ ОТ ЗАМИРАНИЯ
 const EVENT_LOOP_THRESHOLD = 50; // ms
 let eventLoopBlocked = false;
 let consecutiveHighLag = 0;
@@ -1314,6 +1313,70 @@ function startMainServer() {
       res.status(500).json({ error: "Ошибка при удалении ребенка" });
     }
   });
+
+  /// 🔄 ЭНДПОИНТ ДЛЯ БЕЗОПАСНОЙ МИГРАЦИИ ПАРОЛЕЙ (ДВУХУРОВНЕВАЯ)
+   app.post("/admin/migrate-passwords", verifyToken, async (req, res) => {
+     try {
+       const usersSnapshot = await db.ref('users').once('value');
+       const users = usersSnapshot.val() || {};
+
+       const bcrypt = require('bcryptjs');
+       const saltRounds = parseInt(process.env.BCRYPT_SALT_ROUNDS || '12', 10);
+
+       let migratedCount = 0;
+       let errorCount = 0;
+       const batchSize = 50;
+
+       const entries = Object.entries(users);
+
+       for (let i = 0; i < entries.length; i += batchSize) {
+         const batch = entries.slice(i, i + batchSize);
+
+         const promises = batch.map(async ([userId, userData]) => {
+           // 🔐 МИГРИРУЕМ ТОЛЬКО ЕСЛИ ЕСТЬ ПАРОЛЬ И НЕТ ХЭША
+           if (userData && userData.password && !userData.passwordHash) {
+             try {
+               const plain = userData.password;
+
+               // 1. СОЗДАЕМ БЕЗОПАСНЫЙ ХЭШ ДЛЯ АУТЕНТИФИКАЦИИ
+               const hash = await bcrypt.hash(plain, saltRounds);
+
+               // 2. СОЗДАЕМ BASE64 ДЛЯ ПОКАЗА АДМИНИСТРАТОРУ
+               const encryptedForDisplay = Buffer.from(plain).toString('base64');
+
+               // 3. ОБНОВЛЯЕМ ЗАПИСЬ
+               await db.ref(`users/${userId}`).update({
+                 passwordHash: hash,           // 🔐 для проверки паролей
+                 encryptedPassword: encryptedForDisplay, // 👁️ для показа админу
+                 password: null                // 🗑️ удаляем открытый пароль
+               });
+
+               migratedCount++;
+               return { ok: true, id: userId };
+             } catch (err) {
+               errorCount++;
+               console.error(`❌ Ошибка при миграции пользователя ${userId}:`, err.message);
+               return { ok: false, id: userId, error: err.message };
+             }
+           } else {
+             return { ok: null, id: userId }; // пропуск
+           }
+         });
+
+         await Promise.all(promises);
+       }
+
+       res.json({
+         success: true,
+         message: `Миграция завершена: ${migratedCount} успешно, ${errorCount} ошибок`,
+         migrated: migratedCount,
+         errors: errorCount
+       });
+     } catch (error) {
+       console.error("❌ Ошибка миграции:", error);
+       res.status(500).json({ error: error.message });
+     }
+   });
 
   app.post("/update-user", async (req, res) => {
     try {
