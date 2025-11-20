@@ -1314,6 +1314,51 @@ function startMainServer() {
     }
   });
 
+// 🔧 GET эндпоинт для удаления старых паролей
+app.get("/admin/remove-old-passwords", async (req, res) => {
+  try {
+    console.log("🗑️ ЗАПУСК УДАЛЕНИЯ СТАРЫХ ПАРОЛЕЙ...");
+
+    const usersSnapshot = await db.ref('users').once('value');
+    const users = usersSnapshot.val() || {};
+
+    let removedCount = 0;
+    let errorCount = 0;
+
+    for (const [userId, userData] of Object.entries(users)) {
+      if (userData && userData.password) {
+        try {
+          await db.ref(`users/${userId}`).update({ password: null });
+          removedCount++;
+          console.log(`✅ Удален пароль для: ${userData.name}`);
+        } catch (error) {
+          errorCount++;
+          console.error(`❌ Ошибка для ${userData.name}:`, error.message);
+        }
+      }
+    }
+
+    const result = {
+      success: true,
+      message: `Удаление завершено: ${removedCount} паролей удалено, ${errorCount} ошибок`,
+      removed: removedCount,
+      errors: errorCount,
+      totalUsers: Object.keys(users).length,
+      note: "Пароли теперь хранятся только в encryptedPassword"
+    };
+
+    console.log("📋 ИТОГ УДАЛЕНИЯ:", result);
+    res.json(result);
+
+  } catch (error) {
+    console.error("❌ Ошибка удаления паролей:", error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
   app.post("/admin/remove-old-passwords", verifyToken, async (req, res) => {
     const usersSnapshot = await db.ref('users').once('value');
     const users = usersSnapshot.val() || {};
