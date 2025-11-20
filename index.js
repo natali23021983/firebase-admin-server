@@ -10,7 +10,7 @@ const cors = require("cors");
 const admin = require('firebase-admin');
 const multer = require('multer');
 const { v4: uuidv4 } = require('uuid');
-const { S3Client, PutObjectCommand, DeleteObjectCommand, DeleteObjectsCommand } = require("@aws-sdk/client-s3");
+const { S3Client, PutObjectCommand, DeleteObjectCommand, DeleteObjectsCommand, ListObjectsV2Command } = require("@aws-sdk/client-s3");
 const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 const rateLimit = require('express-rate-limit');
 
@@ -810,11 +810,11 @@ function startMainServer() {
           .map(([userId, user]) => ({ userId, ...user }));
 
         // Отправка push-уведомлений всем администраторам
-        for (const admin of admins) {
-          if (admin.fcmToken) {
+        for (const adminUser of admins) { // Изменяем название переменной
+          if (adminUser.fcmToken) {
             try {
-              await admin.messaging().send({
-                token: admin.fcmToken,
+              await admin.messaging().send({ // Теперь 'admin' - это Firebase Admin SDK
+                token: adminUser.fcmToken,   // А 'adminUser' - объект пользователя
                 notification: {
                   title: 'Уведомление системы',
                   body: message.length > 100 ? message.substring(0, 100) + '...' : message
@@ -826,7 +826,7 @@ function startMainServer() {
                 }
               });
             } catch (error) {
-              console.log(`Не удалось отправить уведомление администратору ${admin.userId}`);
+              console.log(`Не удалось отправить уведомление администратору ${adminUser.userId}`);
             }
           }
         }
@@ -905,6 +905,11 @@ function startMainServer() {
   /// ==================== ИНИЦИАЛИЗАЦИЯ АВТОМАТИЧЕСКОЙ СИСТЕМЫ ====================
 
    const autoAdminSystem = new AutomatedAdminSystem();
+
+   // ЗАПУСК АВТОМАТИЧЕСКИХ СИСТЕМ
+   autoAdminSystem.startAutomaticMonitoring();
+   autoAdminSystem.startAutomaticArchiving();
+   autoAdminSystem.startAutomaticBackups();
 
    // ==================== СИСТЕМА ЭКСПОРТА ДАННЫХ ДЛЯ АДМИНИСТРАТОРА ====================
 
@@ -1047,7 +1052,7 @@ function startMainServer() {
          return [];
        }
      }
-   } // ← ДОБАВЬТЕ ЭТУ ЗАКРЫВАЮЩУЮ СКОБКУ ДЛЯ КЛАССА
+   }
 
    // ==================== ИНИЦИАЛИЗАЦИЯ СИСТЕМЫ ЭКСПОРТА ====================
 
