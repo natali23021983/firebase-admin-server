@@ -1314,48 +1314,109 @@ function startMainServer() {
     }
   });
 
-  // ⚠️ ВРЕМЕННЫЙ эндпоинт для тестирования (удалить после использования)
+  // ⚠️ ВРЕМЕННЫЙ GET эндпоинт для миграции (удалить после использования)
   app.get("/admin/migrate-passwords-test", async (req, res) => {
     try {
-      console.log("🚀 Запуск миграции через GET...");
+      console.log("🚀 ЗАПУСК МИГРАЦИИ ПАРОЛЕЙ...");
 
       const usersSnapshot = await db.ref('users').once('value');
       const users = usersSnapshot.val() || {};
 
       let migratedCount = 0;
       let errorCount = 0;
+      let skippedCount = 0;
+
+      console.log(`📊 Найдено пользователей: ${Object.keys(users).length}`);
 
       for (const [userId, userData] of Object.entries(users)) {
+        console.log(`🔍 Обработка: ${userData?.name || 'unknown'} (${userId})`);
+
         if (userData && userData.password && !userData.encryptedPassword) {
           try {
             // Base64 шифрование для показа
             const encrypted = Buffer.from(userData.password).toString('base64');
 
+            console.log(`   🔐 Шифруем: "${userData.password}" → "${encrypted}"`);
+
             // Обновляем запись
             await db.ref(`users/${userId}`).update({
-              encryptedPassword: encrypted,
-              password: null
+              encryptedPassword: encrypted
+              // password: null // Пока оставляем старый пароль для безопасности
             });
 
             migratedCount++;
-            console.log(`✅ Зашифрован пароль для: ${userData.name}`);
+            console.log(`   ✅ Успешно: ${userData.name}`);
           } catch (error) {
             errorCount++;
-            console.error(`❌ Ошибка для ${userData.name}:`, error.message);
+            console.error(`   ❌ Ошибка: ${userData.name} - ${error.message}`);
           }
+        } else {
+          skippedCount++;
+          if (userData) {
+            console.log(`   ⏭️ Пропуск: ${userData.name} - ${!userData.password ? 'нет пароля' : 'уже зашифрован'}`);
+          }
+        }
+      }
+
+      const result = {
+        success: true,
+        message: `Миграция завершена: ${migratedCount} успешно, ${errorCount} ошибок, ${skippedCount} пропущено`,
+        migrated: migratedCount,
+        errors: errorCount,
+        skipped: skippedCount,
+        total: Object.keys(users).length,
+        note: "Это временный эндпоинт для тестирования"
+      };
+
+      console.log("📋 ИТОГ МИГРАЦИИ:", result);
+      res.json(result);
+
+    } catch (error) {
+      console.error("❌ КРИТИЧЕСКАЯ ОШИБКА МИГРАЦИИ:", error);
+      res.status(500).json({
+        success: false,
+        error: error.message,
+        stack: error.stack
+      });
+    }
+  });
+
+  // 🔍 ЭНДПОИНТ ДЛЯ ПРОВЕРКИ СТАТУСА
+  app.get("/admin/check-passwords", async (req, res) => {
+    try {
+      const usersSnapshot = await db.ref('users').once('value');
+      const users = usersSnapshot.val() || {};
+
+      let stats = {
+        total: Object.keys(users).length,
+        withPlainPassword: 0,
+        withEncryptedPassword: 0,
+        withPasswordHash: 0,
+        noPassword: 0
+      };
+
+      for (const [userId, userData] of Object.entries(users)) {
+        if (userData) {
+          if (userData.password) stats.withPlainPassword++;
+          if (userData.encryptedPassword) stats.withEncryptedPassword++;
+          if (userData.passwordHash) stats.withPasswordHash++;
+          if (!userData.password && !userData.encryptedPassword) stats.noPassword++;
         }
       }
 
       res.json({
         success: true,
-        message: `Миграция завершена: ${migratedCount} успешно, ${errorCount} ошибок`,
-        migrated: migratedCount,
-        errors: errorCount,
-        note: "Это временный эндпоинт для тестирования"
+        stats: stats,
+        users: Object.entries(users).map(([id, data]) => ({
+          id,
+          name: data?.name,
+          hasPassword: !!data?.password,
+          hasEncrypted: !!data?.encryptedPassword,
+          hasHash: !!data?.passwordHash
+        })).slice(0, 10) // первые 10 пользователей
       });
 
     } catch (error) {
-      console.error("❌ Ошибка миграции:", error);
       res.status(500).json({ error: error.message });
     }
   });
