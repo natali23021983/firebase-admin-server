@@ -1314,6 +1314,52 @@ function startMainServer() {
     }
   });
 
+  // ⚠️ ВРЕМЕННЫЙ эндпоинт для тестирования (удалить после использования)
+  app.get("/admin/migrate-passwords-test", async (req, res) => {
+    try {
+      console.log("🚀 Запуск миграции через GET...");
+
+      const usersSnapshot = await db.ref('users').once('value');
+      const users = usersSnapshot.val() || {};
+
+      let migratedCount = 0;
+      let errorCount = 0;
+
+      for (const [userId, userData] of Object.entries(users)) {
+        if (userData && userData.password && !userData.encryptedPassword) {
+          try {
+            // Base64 шифрование для показа
+            const encrypted = Buffer.from(userData.password).toString('base64');
+
+            // Обновляем запись
+            await db.ref(`users/${userId}`).update({
+              encryptedPassword: encrypted,
+              password: null
+            });
+
+            migratedCount++;
+            console.log(`✅ Зашифрован пароль для: ${userData.name}`);
+          } catch (error) {
+            errorCount++;
+            console.error(`❌ Ошибка для ${userData.name}:`, error.message);
+          }
+        }
+      }
+
+      res.json({
+        success: true,
+        message: `Миграция завершена: ${migratedCount} успешно, ${errorCount} ошибок`,
+        migrated: migratedCount,
+        errors: errorCount,
+        note: "Это временный эндпоинт для тестирования"
+      });
+
+    } catch (error) {
+      console.error("❌ Ошибка миграции:", error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
   /// 🔄 ЭНДПОИНТ ДЛЯ БЕЗОПАСНОЙ МИГРАЦИИ ПАРОЛЕЙ (ДВУХУРОВНЕВАЯ)
    app.post("/admin/migrate-passwords", verifyToken, async (req, res) => {
      try {
