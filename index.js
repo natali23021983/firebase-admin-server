@@ -1998,7 +1998,7 @@ function startMainServer() {
     }
 
     // ЧАТ И СООБЩЕНИЯ
-    app.post("/send-message", verifyToken, async (req, res) {
+    app.post("/send-message", verifyToken, async (req, res) => {
       // Отправка сообщения в чат
       try {
         const { chatId, message, messageType = "text", fileUrl, fileName } = req.body;
