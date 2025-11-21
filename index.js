@@ -785,8 +785,8 @@ function startMainServer() {
             console.error("Ошибка автоматической архивации:", error);
           }
         },
-        30 * 24 * 60 * 60 * 1000,
-      ); // 30 дней
+        24 * 60 * 60 * 1000,
+      ); // 24 ЧАСА
     }
 
     // Автоматическая архивация данных старше 3 лет - Данные перемещаются в раздел /archive/ в Firebase
@@ -851,8 +851,8 @@ function startMainServer() {
             console.error("Ошибка автоматического бэкапа:", error);
           }
         },
-        7 * 24 * 60 * 60 * 1000,
-      ); // 7 дней
+        12 * 60 * 60 * 1000,
+      ); // 12 ЧАСОВ
     }
 
     // Очистка старых резервных копий (оставляет только 10 последних)
@@ -1010,8 +1010,8 @@ function startMainServer() {
 
   // ЗАПУСК АВТОМАТИЧЕСКИХ СИСТЕМ
   autoAdminSystem.startAutomaticMonitoring();
-  //autoAdminSystem.startAutomaticArchiving();
-  //autoAdminSystem.startAutomaticBackups();
+  autoAdminSystem.startAutomaticArchiving();
+  autoAdminSystem.startAutomaticBackups();
 
   // ==================== СИСТЕМА ЭКСПОРТА ДАННЫХ ДЛЯ АДМИНИСТРАТОРА ====================
 
