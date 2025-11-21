@@ -2411,7 +2411,7 @@ function startMainServer() {
           const messagePayload = {
             token: recipient.fcmToken,
             notification: {
-              title: `💬 ${isPrivate ? senderName : chatTitle}`,
+              title: `${isPrivate ? senderName : chatTitle}`,
               body:
                 messageType === "text"
                   ? message
@@ -3271,9 +3271,4 @@ function startMainServer() {
   }
 
   console.log("Оптимизированная версия для Render.com:");
-  console.log("   Адаптивные лимиты памяти и соединений");
-  console.log("   Уменьшенные таймауты Firebase");
-  console.log("   Оптимизированный кэш");
-  console.log("   Улучшенная обработка ошибок");
-  console.log("   Проактивный мониторинг ресурсов");
 }
