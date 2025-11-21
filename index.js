@@ -1010,8 +1010,8 @@ function startMainServer() {
 
   // ЗАПУСК АВТОМАТИЧЕСКИХ СИСТЕМ
   autoAdminSystem.startAutomaticMonitoring();
-  autoAdminSystem.startAutomaticArchiving();
-  autoAdminSystem.startAutomaticBackups();
+  //autoAdminSystem.startAutomaticArchiving();
+  //autoAdminSystem.startAutomaticBackups();
 
   // ==================== СИСТЕМА ЭКСПОРТА ДАННЫХ ДЛЯ АДМИНИСТРАТОРА ====================
 
