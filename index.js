@@ -1409,6 +1409,11 @@ function startMainServer() {
   app.post("/deleteUserByName", async (req, res) => {
     // Удаление пользователя по имени (родитель, педагог или ребенок)
     const fullName = req.body.fullName?.trim().toLowerCase();
+
+    console.log(
+      `УДАЛЕНИЕ ПОЛЬЗОВАТЕЛЯ: запущено для "${fullName}" от IP: ${req.ip}`,
+    );
+
     if (!fullName) return res.status(400).send("fullName обязателен");
 
     try {
@@ -1427,6 +1432,9 @@ function startMainServer() {
 
         // Обработка удаления родителя
         if (name === fullName && role === "родитель") {
+          console.log(
+            `УДАЛЕНИЕ РОДИТЕЛЯ: ${name} (ID: ${userId}), детей: ${user.children ? Object.keys(user.children).length : 0}`,
+          );
           found = true;
 
           // Удаление детей родителя из групп
@@ -1463,12 +1471,13 @@ function startMainServer() {
               authError.message,
             );
           }
-
+          console.log(`РОДИТЕЛЬ УДАЛЕН: ${name} (ID: ${userId})`);
           return res.send("Родитель и его дети удалены.");
         }
 
         // Обработка удаления педагога
         if (name === fullName && role === "педагог") {
+          console.log(`УДАЛЕНИЕ ПЕДАГОГА: ${name} (ID: ${userId})`);
           found = true;
 
           // Удаление педагога из всех групп
@@ -1494,7 +1503,7 @@ function startMainServer() {
           } catch (authError) {
             console.log("Пользователь не найден в Auth:", authError.message);
           }
-
+          console.log(`ПЕДАГОГ УДАЛЕН: ${name} (ID: ${userId})`);
           return res.send("Педагог удалён.");
         }
 
@@ -1502,6 +1511,9 @@ function startMainServer() {
         if (user.children) {
           for (const [childId, child] of Object.entries(user.children)) {
             if (child.fullName?.trim().toLowerCase() === fullName) {
+              console.log(
+                `УДАЛЕНИЕ РЕБЕНКА: ${child.fullName} (ID: ${childId}) из пользователя ${userId}`,
+              );
               found = true;
 
               // Удаление ребенка из группы
@@ -1521,7 +1533,9 @@ function startMainServer() {
 
               // Удаление ребенка из пользователя
               await db.ref(`users/${userId}/children/${childId}`).remove();
-
+              console.log(
+                `app.post("/news", verifyToken, async (req, res) => {РЕБЕНОК УДАЛЕН: ${child.fullName} (ID: ${childId})`,
+              );
               return res.send("Ребёнок удалён.");
             }
           }
@@ -1797,6 +1811,10 @@ function startMainServer() {
       } = req.body;
       const authorId = req.user.uid;
 
+      console.log(
+        `РЕДАКТИРОВАНИЕ НОВОСТИ: ${newsId}, группа ${groupId}, автор ${authorId}`,
+      );
+
       if (!newsId || !groupId || !title || !description) {
         return res
           .status(400)
@@ -1861,6 +1879,10 @@ function startMainServer() {
         news: updatedData,
         deletedFiles: toDelete.length,
       });
+
+      console.log(
+        `НОВОСТЬ ОБНОВЛЕНА: ${newsId}, удалено файлов: ${toDelete.length}`,
+      );
     } catch (err) {
       global.performanceMetrics.errors++;
 
@@ -1881,7 +1903,12 @@ function startMainServer() {
       const { groupId, title, description, mediaUrls = [] } = req.body;
       const authorId = req.user.uid;
 
+      console.log(
+        `СОЗДАНИЕ НОВОСТИ: группа "${groupId}", автор ${authorId}, "${title.substring(0, 50)}..."`,
+      );
+
       if (!groupId || !title || !description) {
+        console.warn("СОЗДАНИЕ НОВОСТИ: отсутствуют обязательные поля");
         return res
           .status(400)
           .json({ error: "groupId, title и description обязательны" });
@@ -1904,6 +1931,10 @@ function startMainServer() {
 
       // Очистка кэша
       quickCache.cache.delete(`news_${groupId}`);
+
+      console.log(
+        `НОВОСТЬ СОЗДАНА: ID ${id}, медиафайлов: ${mediaUrls.length}, группа: ${groupId}`,
+      );
 
       return res.json({
         success: true,
@@ -2196,6 +2227,10 @@ function startMainServer() {
       } = req.body;
       const senderId = req.user.uid;
 
+      console.log(
+        `ОТПРАВКА СООБЩЕНИЯ: чат ${chatId}, от ${senderId}, тип: ${messageType}`,
+      );
+
       if (!chatId || !message) {
         return res.status(400).json({ error: "chatId и message обязательны" });
       }
@@ -2225,11 +2260,15 @@ function startMainServer() {
       let chatRef;
       if (isPrivateChat) {
         chatRef = db.ref(`chats/private/${chatId}/messages/${messageId}`);
+        console.log(`ЛИЧНОЕ СООБЩЕНИЕ: ${chatId}`);
       } else {
         chatRef = db.ref(`chats/groups/${chatId}/messages/${messageId}`);
+        console.log(`ГРУППОВОЕ СООБЩЕНИЕ: ${chatId}`);
       }
 
       await chatRef.set(messageData);
+
+      console.log(`СООБЩЕНИЕ ОТПРАВЛЕНО: ID ${messageId}, от ${senderName}`);
 
       // Отправка уведомления
       sendChatNotification({
@@ -2636,6 +2675,10 @@ function startMainServer() {
     try {
       const { groupId, eventId, title, time, place, comments, date } = req.body;
 
+      console.log(
+        `ОТПРАВКА УВЕДОМЛЕНИЯ О СОБЫТИИ: "${title}", группа ${groupId}`,
+      );
+
       if (!groupId || !eventId || !title) {
         return res.status(400).json({
           error: "groupId, eventId, title обязательны",
@@ -2683,6 +2726,10 @@ function startMainServer() {
         date,
         notificationBody,
       });
+
+      console.log(
+        `УВЕДОМЛЕНИЯ ОТПРАВЛЕНЫ: событие "${title}", получателей: ${sendResults.successful}/${parents.length}`,
+      );
 
       res.json({
         success: true,
