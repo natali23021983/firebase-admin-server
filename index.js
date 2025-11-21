@@ -1,6 +1,6 @@
 require('dotenv').config();
 
-// ==================== ИМПОРТЫ ====================
+// ====================ИМПОРТЫ ====================
 const net = require('net');
 const os = require('os');
 const https = require('https');
@@ -2069,7 +2069,7 @@ function startMainServer() {
       }
     });
 
-    app.post("/save-fcm-token", verifyToken, async (req, res) {
+    app.post("/save-fcm-token", verifyToken, async (req, res) => {
       // Сохранение FCM токена для push-уведомлений
       try {
         const { fcmToken } = req.body;
@@ -2413,7 +2413,7 @@ function startMainServer() {
       }
     }
 
-    app.post("/send-event-notification", verifyToken, async (req, res) {
+    app.post("/send-event-notification", verifyToken, async (req, res) => {
       // Отправка уведомлений о новом событии
       try {
         const { groupId, eventId, title, time, place, comments, date } = req.body;
