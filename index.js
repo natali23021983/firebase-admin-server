@@ -2826,7 +2826,7 @@ const dataExporter = new DataExporter();
  app.get("/admin/simple-status", verifyToken, async (req, res) => {
    try {
      const user = await getUserWithCache(req.user.uid);
-     if (user.role !== 'администратор') {
+     if (user.role !== 'Администратор') {
        return res.status(403).json({ error: "Требуются права администратора" });
      }
 
