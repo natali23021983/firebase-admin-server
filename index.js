@@ -602,461 +602,460 @@ function startMainServer() {
 
   // ==================== АВТОМАТИЧЕСКАЯ СИСТЕМА САМООБСЛУЖИВАНИЯ ====================
 
-  // Класс для автоматического администрирования системы
-  class AutomatedAdminSystem {
-    constructor() {
-      this.lastCheck = Date.now();
-      this.problemsDetected = [];
-    }
+// Класс для автоматического администрирования системы
+class AutomatedAdminSystem {
+  constructor() {
+    this.lastCheck = Date.now();
+    this.problemsDetected = [];
+  }
 
-    // Запуск автоматического мониторинга системы
-    async startAutomaticMonitoring() {
-      console.log('Запуск автоматического мониторинга системы...');
+  // Запуск автоматического мониторинга системы
+  async startAutomaticMonitoring() {
+    console.log('Запуск автоматического мониторинга системы...');
 
-      // Проверка каждые 24 часа
-      setInterval(async () => {
-        await this.runAutomaticChecks();
-      }, 24 * 60 * 60 * 1000);
+    // Проверка каждые 24 часа
+    setInterval(async () => {
+      await this.runAutomaticChecks();
+    }, 24 * 60 * 60 * 1000);
 
-      // Первая проверка через 30 секунд после запуска
-      setTimeout(async () => {
-        await this.runAutomaticChecks();
-      }, 30000);
-    }
+    // Первая проверка через 30 секунд после запуска
+    setTimeout(async () => {
+      await this.runAutomaticChecks();
+    }, 30000);
+  }
 
-    // Выполнение комплекса автоматических проверок
-    async runAutomaticChecks() {
-      try {
-        console.log('Автоматическая проверка системы...');
+  // Выполнение комплекса автоматических проверок
+  async runAutomaticChecks() {
+    try {
+      console.log('Автоматическая проверка системы...');
 
-        const checks = await Promise.allSettled([
-          this.checkDataIntegrity(),
-          this.checkSystemHealth(),
-          this.checkArchiveNeeded()
-        ]);
+      const checks = await Promise.allSettled([
+        this.checkDataIntegrity(),
+        this.checkSystemHealth(),
+        this.checkArchiveNeeded()
+      ]);
 
-        const problems = checks
-          .filter(result => result.status === 'fulfilled' && result.value.hasProblems)
-          .map(result => result.value.message);
+      const problems = checks
+        .filter(result => result.status === 'fulfilled' && result.value.hasProblems)
+        .map(result => result.value.message);
 
-        // Отправка уведомления администратору если есть проблемы
-        if (problems.length > 0) {
-          await this.notifyAdmin('Обнаружены проблемы в системе: ' + problems.join(', '));
-        }
-
-        // Автоматическое исправление простых проблем
-        await this.autoFixCommonProblems();
-
-      } catch (error) {
-        console.error('Ошибка автоматической проверки:', error);
+      // Отправка уведомления администратору если есть проблемы
+      if (problems.length > 0) {
+        await this.notifyAdmin('Обнаружены проблемы в системе: ' + problems.join(', '));
       }
-    }
 
-    // Автоматическое исправление распространенных проблем данных
-    async autoFixCommonProblems() {
-      console.log('Автоматическое исправление распространенных проблем...');
+      // Автоматическое исправление простых проблем
+      await this.autoFixCommonProblems();
 
-      try {
-        // Проверка и исправление пользователей без имени
-        const usersSnap = await db.ref('users').once('value');
-        const users = usersSnap.val() || {};
-
-        let fixedUsers = 0;
-        for (const [userId, user] of Object.entries(users)) {
-          if (!user.name || user.name === 'Неизвестный') {
-            await db.ref(`users/${userId}`).update({
-              name: user.name || 'Пользователь'
-            });
-            fixedUsers++;
-          }
-        }
-
-        if (fixedUsers > 0) {
-          console.log(`Автоматически исправлено ${fixedUsers} пользователей`);
-        }
-
-        // Очистка кэша при низкой памяти
-        const memoryUsage = process.memoryUsage();
-        if (memoryUsage.heapUsed > MEMORY_LIMIT * 0.8) {
-          console.log('Автоочистка кэша из-за нехватки памяти');
-          if (global.quickCache) {
-            global.quickCache.cleanup();
-          }
-        }
-
-      } catch (error) {
-        console.error('Ошибка автоисправления:', error);
-      }
-    }
-
-    // Запуск автоматической архивации по расписанию - выполняется каждые 6 месяцев
-    async startAutomaticArchiving() {
-      console.log('Настройка автоматической архивации...');
-
-      // Архивация каждые 6 месяцев
-      setInterval(async () => {
-        try {
-          console.log('Запуск автоматической архивации...');
-          const archivedCount = await this.archiveOldDataAutomatically();
-
-          if (archivedCount > 0) {
-            await this.notifyAdmin(`Автоматически архивировано ${archivedCount} записей`);
-          }
-        } catch (error) {
-          console.error('Ошибка автоматической архивации:', error);
-        }
-      }, 180 * 24 * 60 * 60 * 1000); // 6 месяцев
-    }
-
-    // Автоматическая архивация данных старше 3 лет - Данные перемещаются в раздел /archive/ в Firebase
-    async archiveOldDataAutomatically() {
-      try {
-        const threeYearsAgo = Date.now() - (3 * 365 * 24 * 60 * 60 * 1000);
-        const usersSnap = await db.ref('users').once('value');
-        const users = usersSnap.val() || {};
-
-        let archived = 0;
-        for (const [userId, user] of Object.entries(users)) {
-          // Архивация неактивных пользователей (старше 3 лет)
-          if (user.lastActivity && user.lastActivity < threeYearsAgo) {
-            // Перемещение в архив с метаданными
-            await db.ref(`archive/users/${userId}`).set({
-              ...user,
-              archivedAt: Date.now(),
-              archivedAutomatically: true,
-              originalPath: `users/${userId}`
-            });
-            // Удаление из активных данных
-            await db.ref(`users/${userId}`).remove();
-            archived++;
-          }
-        }
-
-        return archived;
-      } catch (error) {
-        console.error('Ошибка архивации:', error);
-        return 0;
-      }
-    }
-
-    // Запуск автоматического резервного копирования в S3
-
-    async startAutomaticBackups() {
-      console.log('Настройка автоматического резервного копирования...');
-
-      // Бэкап каждую неделю
-      setInterval(async () => {
-        try {
-          console.log('Запуск автоматического резервного копирования...');
-          const result = await dataExporter.createAutomatedBackup();
-
-          if (result.success) {
-            console.log(`Автоматический бэкап создан: ${result.fileName}`);
-
-            // Уведомление администратора о успешном бэкапе
-            await this.notifyAdmin(`Создана резервная копия: ${result.fileName}`);
-
-            // Очистка старых бэкапов (оставляем только 10 последних)
-            await this.cleanupOldBackups();
-          } else {
-            console.error('Ошибка автоматического бэкапа:', result.error);
-            await this.notifyAdmin(`Ошибка создания резервной копии: ${result.error}`);
-          }
-        } catch (error) {
-          console.error('Ошибка автоматического бэкапа:', error);
-        }
-      }, 7 * 24 * 60 * 60 * 1000); // 7 дней
-    }
-
-    //Очистка старых резервных копий (оставляет только 10 последних)
-    async cleanupOldBackups() {
-      try {
-        const backups = await dataExporter.listBackups();
-
-        if (backups.length > 10) {
-          const toDelete = backups.slice(10);
-
-          console.log(`Очистка ${toDelete.length} старых бэкапов...`);
-
-          for (const backup of toDelete) {
-            await s3.send(new DeleteObjectCommand({
-              Bucket: BUCKET_NAME,
-              Key: backup.key
-            }));
-            console.log(`Удален старый бэкап: ${backup.key}`);
-          }
-
-          return { deleted: toDelete.length };
-        }
-
-        return { deleted: 0 };
-      } catch (error) {
-        console.error('Ошибка очистки старых бэкапов:', error);
-        return { deleted: 0, error: error.message };
-      }
-    }
-
-    // Отправка простых уведомлений администраторам через FCM
-    async notifyAdmin(message) {
-      try {
-        console.log(`Уведомление администратору: ${message}`);
-
-        // Поиск всех администраторов в системе
-        const usersSnap = await db.ref('users').once('value');
-        const users = usersSnap.val() || {};
-
-        const admins = Object.entries(users)
-          .filter(([_, user]) => user.role === 'администратор')
-          .map(([userId, user]) => ({ userId, ...user }));
-
-        // Отправка push-уведомлений всем администраторам
-        for (const adminUser of admins) { // Изменяем название переменной
-          if (adminUser.fcmToken) {
-            try {
-              await admin.messaging().send({ // Теперь 'admin' - это Firebase Admin SDK
-                token: adminUser.fcmToken,   // А 'adminUser' - объект пользователя
-                notification: {
-                  title: 'Уведомление системы',
-                  body: message.length > 100 ? message.substring(0, 100) + '...' : message
-                },
-                data: {
-                  type: 'system_notification',
-                  message: message,
-                  timestamp: String(Date.now())
-                }
-              });
-            } catch (error) {
-              console.log(`Не удалось отправить уведомление администратору ${adminUser.userId}`);
-            }
-          }
-        }
-
-      } catch (error) {
-        console.error('Ошибка отправки уведомления:', error);
-      }
-    }
-
-    // Проверка целостности данных пользователей
-    async checkDataIntegrity() {
-      try {
-        const usersSnap = await db.ref('users').once('value');
-        const users = usersSnap.val() || {};
-
-        const problems = [];
-        for (const [userId, user] of Object.entries(users)) {
-          if (!user.name || !user.role) {
-            problems.push(`Неполные данные пользователя ${userId}`);
-          }
-        }
-
-        return {
-          hasProblems: problems.length > 0,
-          message: problems.length > 0 ? `Найдено ${problems.length} проблем с данными` : 'Данные в порядке'
-        };
-      } catch (error) {
-        return { hasProblems: true, message: 'Ошибка проверки целостности данных' };
-      }
-    }
-
-    // Проверка здоровья системы и использования ресурсов
-    async checkSystemHealth() {
-      try {
-        const memoryUsage = process.memoryUsage();
-        const memoryPercent = (memoryUsage.heapUsed / MEMORY_LIMIT) * 100;
-
-        if (memoryPercent > 80) {
-          return {
-            hasProblems: true,
-            message: `Высокая загрузка памяти: ${Math.round(memoryPercent)}%`
-          };
-        }
-
-        return { hasProblems: false, message: 'Система работает стабильно' };
-      } catch (error) {
-        return { hasProblems: true, message: 'Ошибка проверки здоровья системы' };
-      }
-    }
-
-    // Проверка необходимости архивации данных
-    async checkArchiveNeeded() {
-      try {
-        const threeYearsAgo = Date.now() - (3 * 365 * 24 * 60 * 60 * 1000);
-        const usersSnap = await db.ref('users').once('value');
-        const users = usersSnap.val() || {};
-
-        const oldUsers = Object.values(users).filter(user =>
-          user.lastActivity && user.lastActivity < threeYearsAgo
-        ).length;
-
-        if (oldUsers > 0) {
-          return {
-            hasProblems: true,
-            message: `Требуется архивация: ${oldUsers} устаревших записей`
-          };
-        }
-
-        return { hasProblems: false, message: 'Архивация не требуется' };
-      } catch (error) {
-        return { hasProblems: true, message: 'Ошибка проверки архивации' };
-      }
+    } catch (error) {
+      console.error('Ошибка автоматической проверки:', error);
     }
   }
 
-  /// ==================== ИНИЦИАЛИЗАЦИЯ АВТОМАТИЧЕСКОЙ СИСТЕМЫ ====================
+  // Автоматическое исправление распространенных проблем данных
+  async autoFixCommonProblems() {
+    console.log('Автоматическое исправление распространенных проблем...');
 
-   const autoAdminSystem = new AutomatedAdminSystem();
+    try {
+      // Проверка и исправление пользователей без имени
+      const usersSnap = await db.ref('users').once('value');
+      const users = usersSnap.val() || {};
 
-   // ЗАПУСК АВТОМАТИЧЕСКИХ СИСТЕМ
-   autoAdminSystem.startAutomaticMonitoring();
-   autoAdminSystem.startAutomaticArchiving();
-   autoAdminSystem.startAutomaticBackups();
+      let fixedUsers = 0;
+      for (const [userId, user] of Object.entries(users)) {
+        if (!user.name || user.name === 'Неизвестный') {
+          await db.ref(`users/${userId}`).update({
+            name: user.name || 'Пользователь'
+          });
+          fixedUsers++;
+        }
+      }
 
-   // ==================== СИСТЕМА ЭКСПОРТА ДАННЫХ ДЛЯ АДМИНИСТРАТОРА ====================
+      if (fixedUsers > 0) {
+        console.log(`Автоматически исправлено ${fixedUsers} пользователей`);
+      }
 
-   // Обеспечивает бэкапы в Yandex Object Storage и экспорт данных
-   class DataExporter {
-     // Экспорт всех данных системы для администратора
-     async exportAllData() {
-       try {
-         const [usersSnap, groupsSnap, newsSnap] = await Promise.all([
-           db.ref('users').once('value'),
-           db.ref('groups').once('value'),
-           db.ref('news').once('value')
-         ]);
+      // Очистка кэша при низкой памяти
+      const memoryUsage = process.memoryUsage();
+      if (memoryUsage.heapUsed > MEMORY_LIMIT * 0.8) {
+        console.log('Автоочистка кэша из-за нехватки памяти');
+        if (global.quickCache) {
+          global.quickCache.cleanup();
+        }
+      }
 
-         const exportData = {
-           timestamp: Date.now(),
-           exportDate: new Date().toISOString(),
-           users: usersSnap.val() || {},
-           groups: groupsSnap.val() || {},
-           news: newsSnap.val() || {},
-           statistics: {
-             usersCount: Object.keys(usersSnap.val() || {}).length,
-             groupsCount: Object.keys(groupsSnap.val() || {}).length,
-             newsCount: Object.keys(newsSnap.val() || {}).length
-           }
-         };
+    } catch (error) {
+      console.error('Ошибка автоисправления:', error);
+    }
+  }
 
-         return exportData;
-       } catch (error) {
-         console.error('Ошибка экспорта данных:', error);
-         throw error;
-       }
-     }
+  // Запуск автоматической архивации по расписанию - выполняется каждые 30 дней
+  async startAutomaticArchiving() {
+    console.log('Настройка автоматической архивации...');
 
-     // Получение системной статистики для мониторинга
-     async getSystemStatistics() {
-       try {
-         const [usersSnap, groupsSnap, newsSnap] = await Promise.all([
-           db.ref('users').once('value'),
-           db.ref('groups').once('value'),
-           db.ref('news').once('value')
-         ]);
+    // Архивация каждые 30 дней
+    setInterval(async () => {
+      try {
+        console.log('Запуск автоматической архивации...');
+        const archivedCount = await this.archiveOldDataAutomatically();
 
-         const users = usersSnap.val() || {};
-         const groups = groupsSnap.val() || {};
-         const news = newsSnap.val() || {};
+        if (archivedCount > 0) {
+          await this.notifyAdmin(`Автоматически архивировано ${archivedCount} записей`);
+        }
+      } catch (error) {
+        console.error('Ошибка автоматической архивации:', error);
+      }
+    }, 30 * 24 * 60 * 60 * 1000); // 30 дней
+  }
 
-         // Статистика по ролям
-         const roles = {};
-         Object.values(users).forEach(user => {
-           const role = user.role || 'неизвестно';
-           roles[role] = (roles[role] || 0) + 1;
-         });
+  // Автоматическая архивация данных старше 3 лет - Данные перемещаются в раздел /archive/ в Firebase
+  async archiveOldDataAutomatically() {
+    try {
+      const threeYearsAgo = Date.now() - (3 * 365 * 24 * 60 * 60 * 1000);
+      const usersSnap = await db.ref('users').once('value');
+      const users = usersSnap.val() || {};
 
-         return {
-           timestamp: Date.now(),
-           users: {
-             total: Object.keys(users).length,
-             byRole: roles
-           },
-           groups: {
-             total: Object.keys(groups).length,
-             withTeachers: Object.values(groups).filter(group =>
-               group.teachers && Object.keys(group.teachers).length > 0
-             ).length
-           },
-           news: {
-             total: Object.keys(news).length
-           },
-           system: {
-             uptime: process.uptime(),
-             memory: Math.round(process.memoryUsage().heapUsed / 1024 / 1024) + 'MB',
-             cacheStats: global.quickCache ? global.quickCache.getStats() : null
-           }
-         };
-       } catch (error) {
-         console.error('Ошибка получения статистики:', error);
-         throw error;
-       }
-     }
+      let archived = 0;
+      for (const [userId, user] of Object.entries(users)) {
+        // Архивация неактивных пользователей (старше 3 лет)
+        if (user.lastActivity && user.lastActivity < threeYearsAgo) {
+          // Перемещение в архив с метаданными
+          await db.ref(`archive/users/${userId}`).set({
+            ...user,
+            archivedAt: Date.now(),
+            archivedAutomatically: true,
+            originalPath: `users/${userId}`
+          });
+          // Удаление из активных данных
+          await db.ref(`users/${userId}`).remove();
+          archived++;
+        }
+      }
 
-     // Автоматическое создание резервной копии в Yandex Object Storage
-     async createAutomatedBackup() {
-       try {
-         console.log('Создание автоматической резервной копии в S3...');
+      return archived;
+    } catch (error) {
+      console.error('Ошибка архивации:', error);
+      return 0;
+    }
+  }
 
-         const backupData = await this.exportAllData();
-         const fileName = `backups/auto-backup-${Date.now()}.json`;
+  // Запуск автоматического резервного копирования в S3
+  async startAutomaticBackups() {
+    console.log('Настройка автоматического резервного копирования...');
 
-         await s3.send(new PutObjectCommand({
-           Bucket: BUCKET_NAME,
-           Key: fileName,
-           Body: JSON.stringify(backupData, null, 2),
-           ContentType: 'application/json'
-         }));
+    // Бэкап каждые 7 дней
+    setInterval(async () => {
+      try {
+        console.log('Запуск автоматического резервного копирования...');
+        const result = await dataExporter.createAutomatedBackup();
 
-         const backupUrl = `https://storage.yandexcloud.net/${BUCKET_NAME}/${fileName}`;
-         console.log(`Резервная копия создана: ${fileName}`);
+        if (result.success) {
+          console.log(`Автоматический бэкап создан: ${result.fileName}`);
 
-         return {
-           success: true,
-           fileName,
-           backupUrl, // ← переменная используется здесь
-           timestamp: Date.now(),
-           size: JSON.stringify(backupData).length
-         };
+          // Уведомление администратора о успешном бэкапе
+          await this.notifyAdmin(`Создана резервная копия: ${result.fileName}`);
 
-       } catch (error) {
-         console.error('Ошибка создания автоматического бэкапа:', error);
-         return {
-           success: false,
-           error: error.message
-         };
-       }
-     }
+          // Очистка старых бэкапов (оставляем только 10 последних)
+          await this.cleanupOldBackups();
+        } else {
+          console.error('Ошибка автоматического бэкапа:', result.error);
+          await this.notifyAdmin(`Ошибка создания резервной копии: ${result.error}`);
+        }
+      } catch (error) {
+        console.error('Ошибка автоматического бэкапа:', error);
+      }
+    }, 7 * 24 * 60 * 60 * 1000); // 7 дней
+  }
 
-     // Получение списка всех резервных копий из S3
-     async listBackups() {
-       try {
-         const command = new ListObjectsV2Command({
-           Bucket: BUCKET_NAME,
-           Prefix: 'backups/'
-         });
+  // Очистка старых резервных копий (оставляет только 10 последних)
+  async cleanupOldBackups() {
+    try {
+      const backups = await dataExporter.listBackups();
 
-         const response = await s3.send(command);
-         const backups = response.Contents || [];
+      if (backups.length > 10) {
+        const toDelete = backups.slice(10);
 
-         return backups.map(backup => {
-           const url = `https://storage.yandexcloud.net/${BUCKET_NAME}/${backup.Key}`;
-           return {
-             key: backup.Key,
-             size: backup.Size,
-             lastModified: backup.LastModified,
-             url: url // ← переменная используется
-           };
-         }).sort((a, b) => new Date(b.lastModified) - new Date(a.lastModified));
+        console.log(`Очистка ${toDelete.length} старых бэкапов...`);
 
-       } catch (error) {
-         console.error('Ошибка получения списка бэкапов:', error);
-         return [];
-       }
-     }
-   }
+        for (const backup of toDelete) {
+          await s3.send(new DeleteObjectCommand({
+            Bucket: BUCKET_NAME,
+            Key: backup.key
+          }));
+          console.log(`Удален старый бэкап: ${backup.key}`);
+        }
 
-   // ==================== ИНИЦИАЛИЗАЦИЯ СИСТЕМЫ ЭКСПОРТА ====================
+        return { deleted: toDelete.length };
+      }
 
-   const dataExporter = new DataExporter();
+      return { deleted: 0 };
+    } catch (error) {
+      console.error('Ошибка очистки старых бэкапов:', error);
+      return { deleted: 0, error: error.message };
+    }
+  }
+
+  // Отправка простых уведомлений администраторам через FCM
+  async notifyAdmin(message) {
+    try {
+      console.log(`Уведомление администратору: ${message}`);
+
+      // Поиск всех администраторов в системе
+      const usersSnap = await db.ref('users').once('value');
+      const users = usersSnap.val() || {};
+
+      const admins = Object.entries(users)
+        .filter(([_, user]) => user.role === 'администратор')
+        .map(([userId, user]) => ({ userId, ...user }));
+
+      // Отправка push-уведомлений всем администраторам
+      for (const adminUser of admins) {
+        if (adminUser.fcmToken) {
+          try {
+            await admin.messaging().send({
+              token: adminUser.fcmToken,
+              notification: {
+                title: 'Уведомление системы',
+                body: message.length > 100 ? message.substring(0, 100) + '...' : message
+              },
+              data: {
+                type: 'system_notification',
+                message: message,
+                timestamp: String(Date.now())
+              }
+            });
+          } catch (error) {
+            console.log(`Не удалось отправить уведомление администратору ${adminUser.userId}`);
+          }
+        }
+      }
+
+    } catch (error) {
+      console.error('Ошибка отправки уведомления:', error);
+    }
+  }
+
+  // Проверка целостности данных пользователей
+  async checkDataIntegrity() {
+    try {
+      const usersSnap = await db.ref('users').once('value');
+      const users = usersSnap.val() || {};
+
+      const problems = [];
+      for (const [userId, user] of Object.entries(users)) {
+        if (!user.name || !user.role) {
+          problems.push(`Неполные данные пользователя ${userId}`);
+        }
+      }
+
+      return {
+        hasProblems: problems.length > 0,
+        message: problems.length > 0 ? `Найдено ${problems.length} проблем с данными` : 'Данные в порядке'
+      };
+    } catch (error) {
+      return { hasProblems: true, message: 'Ошибка проверки целостности данных' };
+    }
+  }
+
+  // Проверка здоровья системы и использования ресурсов
+  async checkSystemHealth() {
+    try {
+      const memoryUsage = process.memoryUsage();
+      const memoryPercent = (memoryUsage.heapUsed / MEMORY_LIMIT) * 100;
+
+      if (memoryPercent > 80) {
+        return {
+          hasProblems: true,
+          message: `Высокая загрузка памяти: ${Math.round(memoryPercent)}%`
+        };
+      }
+
+      return { hasProblems: false, message: 'Система работает стабильно' };
+    } catch (error) {
+      return { hasProblems: true, message: 'Ошибка проверки здоровья системы' };
+    }
+  }
+
+  // Проверка необходимости архивации данных
+  async checkArchiveNeeded() {
+    try {
+      const threeYearsAgo = Date.now() - (3 * 365 * 24 * 60 * 60 * 1000);
+      const usersSnap = await db.ref('users').once('value');
+      const users = usersSnap.val() || {};
+
+      const oldUsers = Object.values(users).filter(user =>
+        user.lastActivity && user.lastActivity < threeYearsAgo
+      ).length;
+
+      if (oldUsers > 0) {
+        return {
+          hasProblems: true,
+          message: `Требуется архивация: ${oldUsers} устаревших записей`
+        };
+      }
+
+      return { hasProblems: false, message: 'Архивация не требуется' };
+    } catch (error) {
+      return { hasProblems: true, message: 'Ошибка проверки архивации' };
+    }
+  }
+}
+
+// ==================== ИНИЦИАЛИЗАЦИЯ АВТОМАТИЧЕСКОЙ СИСТЕМЫ ====================
+
+const autoAdminSystem = new AutomatedAdminSystem();
+
+// ЗАПУСК АВТОМАТИЧЕСКИХ СИСТЕМ
+autoAdminSystem.startAutomaticMonitoring();
+autoAdminSystem.startAutomaticArchiving();
+autoAdminSystem.startAutomaticBackups();
+
+// ==================== СИСТЕМА ЭКСПОРТА ДАННЫХ ДЛЯ АДМИНИСТРАТОРА ====================
+
+// Обеспечивает бэкапы в Yandex Object Storage и экспорт данных
+class DataExporter {
+  // Экспорт всех данных системы для администратора
+  async exportAllData() {
+    try {
+      const [usersSnap, groupsSnap, newsSnap] = await Promise.all([
+        db.ref('users').once('value'),
+        db.ref('groups').once('value'),
+        db.ref('news').once('value')
+      ]);
+
+      const exportData = {
+        timestamp: Date.now(),
+        exportDate: new Date().toISOString(),
+        users: usersSnap.val() || {},
+        groups: groupsSnap.val() || {},
+        news: newsSnap.val() || {},
+        statistics: {
+          usersCount: Object.keys(usersSnap.val() || {}).length,
+          groupsCount: Object.keys(groupsSnap.val() || {}).length,
+          newsCount: Object.keys(newsSnap.val() || {}).length
+        }
+      };
+
+      return exportData;
+    } catch (error) {
+      console.error('Ошибка экспорта данных:', error);
+      throw error;
+    }
+  }
+
+  // Получение системной статистики для мониторинга
+  async getSystemStatistics() {
+    try {
+      const [usersSnap, groupsSnap, newsSnap] = await Promise.all([
+        db.ref('users').once('value'),
+        db.ref('groups').once('value'),
+        db.ref('news').once('value')
+      ]);
+
+      const users = usersSnap.val() || {};
+      const groups = groupsSnap.val() || {};
+      const news = newsSnap.val() || {};
+
+      // Статистика по ролям
+      const roles = {};
+      Object.values(users).forEach(user => {
+        const role = user.role || 'неизвестно';
+        roles[role] = (roles[role] || 0) + 1;
+      });
+
+      return {
+        timestamp: Date.now(),
+        users: {
+          total: Object.keys(users).length,
+          byRole: roles
+        },
+        groups: {
+          total: Object.keys(groups).length,
+          withTeachers: Object.values(groups).filter(group =>
+            group.teachers && Object.keys(group.teachers).length > 0
+          ).length
+        },
+        news: {
+          total: Object.keys(news).length
+        },
+        system: {
+          uptime: process.uptime(),
+          memory: Math.round(process.memoryUsage().heapUsed / 1024 / 1024) + 'MB',
+          cacheStats: global.quickCache ? global.quickCache.getStats() : null
+        }
+      };
+    } catch (error) {
+      console.error('Ошибка получения статистики:', error);
+      throw error;
+    }
+  }
+
+  // Автоматическое создание резервной копии в Yandex Object Storage
+  async createAutomatedBackup() {
+    try {
+      console.log('Создание автоматической резервной копии в S3...');
+
+      const backupData = await this.exportAllData();
+      const fileName = `backups/auto-backup-${Date.now()}.json`;
+
+      await s3.send(new PutObjectCommand({
+        Bucket: BUCKET_NAME,
+        Key: fileName,
+        Body: JSON.stringify(backupData, null, 2),
+        ContentType: 'application/json'
+      }));
+
+      const backupUrl = `https://storage.yandexcloud.net/${BUCKET_NAME}/${fileName}`;
+      console.log(`Резервная копия создана: ${fileName}`);
+
+      return {
+        success: true,
+        fileName,
+        backupUrl,
+        timestamp: Date.now(),
+        size: JSON.stringify(backupData).length
+      };
+
+    } catch (error) {
+      console.error('Ошибка создания автоматического бэкапа:', error);
+      return {
+        success: false,
+        error: error.message
+      };
+    }
+  }
+
+  // Получение списка всех резервных копий из S3
+  async listBackups() {
+    try {
+      const command = new ListObjectsV2Command({
+        Bucket: BUCKET_NAME,
+        Prefix: 'backups/'
+      });
+
+      const response = await s3.send(command);
+      const backups = response.Contents || [];
+
+      return backups.map(backup => {
+        const url = `https://storage.yandexcloud.net/${BUCKET_NAME}/${backup.Key}`;
+        return {
+          key: backup.Key,
+          size: backup.Size,
+          lastModified: backup.LastModified,
+          url: url
+        };
+      }).sort((a, b) => new Date(b.lastModified) - new Date(a.lastModified));
+
+    } catch (error) {
+      console.error('Ошибка получения списка бэкапов:', error);
+      return [];
+    }
+  }
+}
+
+// ==================== ИНИЦИАЛИЗАЦИЯ СИСТЕМЫ ЭКСПОРТА ====================
+
+const dataExporter = new DataExporter();
 
    // ==================== AWS S3 ====================
    const s3 = new S3Client({
@@ -2849,6 +2848,15 @@ function startMainServer() {
    } catch (error) {
      res.status(500).json({ error: error.message });
    }
+ });
+
+ app.get("/debug-s3", (req, res) => {
+   res.json({
+     bucket: process.env.YC_S3_BUCKET,
+     accessKey: process.env.YC_ACCESS_KEY ? "Есть" : "Нет",
+     secretKey: process.env.YC_SECRET_KEY ? "Есть" : "Нет",
+     region: process.env.YC_S3_REGION
+   });
  });
 
  function startExternalKeepAlive() {
