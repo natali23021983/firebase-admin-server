@@ -1660,90 +1660,6 @@ function startMainServer() {
     }
   });
 
-  app.post("/admin/remove-old-passwords", verifyToken, async (req, res) => {
-    // Удаление старых паролей из базы данных
-    const usersSnapshot = await db.ref("users").once("value");
-    const users = usersSnapshot.val() || {};
-
-    let updated = 0;
-    for (const [userId, userData] of Object.entries(users)) {
-      if (userData.password) {
-        await db.ref(`users/${userId}`).update({ password: null });
-        updated++;
-      }
-    }
-
-    res.json({ success: true, updated: updated });
-  });
-
-  app.post("/admin/migrate-passwords", verifyToken, async (req, res) => {
-    // Миграция паролей на двухуровневую систему хранения
-    try {
-      const usersSnapshot = await db.ref("users").once("value");
-      const users = usersSnapshot.val() || {};
-
-      const bcrypt = require("bcryptjs");
-      const saltRounds = parseInt(process.env.BCRYPT_SALT_ROUNDS || "12", 10);
-
-      let migratedCount = 0;
-      let errorCount = 0;
-      const batchSize = 50;
-
-      const entries = Object.entries(users);
-
-      // Обработка пользователей батчами
-      for (let i = 0; i < entries.length; i += batchSize) {
-        const batch = entries.slice(i, i + batchSize);
-
-        const promises = batch.map(async ([userId, userData]) => {
-          // Миграция только если есть пароль и нет хэша
-          if (userData && userData.password && !userData.passwordHash) {
-            try {
-              const plain = userData.password;
-
-              // Создание безопасного хэша для аутентификации
-              const hash = await bcrypt.hash(plain, saltRounds);
-
-              // Создание base64 для показа администратору
-              const encryptedForDisplay = Buffer.from(plain).toString("base64");
-
-              // Обновление записи пользователя
-              await db.ref(`users/${userId}`).update({
-                passwordHash: hash, // для проверки паролей
-                encryptedPassword: encryptedForDisplay, // для показа админу
-                password: null, // удаляем открытый пароль
-              });
-
-              migratedCount++;
-              return { ok: true, id: userId };
-            } catch (err) {
-              errorCount++;
-              console.error(
-                `Ошибка при миграции пользователя ${userId}:`,
-                err.message,
-              );
-              return { ok: false, id: userId, error: err.message };
-            }
-          } else {
-            return { ok: null, id: userId }; // пропуск
-          }
-        });
-
-        await Promise.all(promises);
-      }
-
-      res.json({
-        success: true,
-        message: `Миграция завершена: ${migratedCount} успешно, ${errorCount} ошибок`,
-        migrated: migratedCount,
-        errors: errorCount,
-      });
-    } catch (error) {
-      console.error("Ошибка миграции:", error);
-      res.status(500).json({ error: error.message });
-    }
-  });
-
   app.post("/update-user", async (req, res) => {
     // Обновление email пользователя
     try {
@@ -3245,6 +3161,108 @@ function startMainServer() {
           res.status(500).json({ error: error.message });
       }
   });
+
+  app.post("/admin/remove-old-passwords", verifyToken, async (req, res) => {
+      try {
+          // Удаление старых паролей из базы данных
+          const usersSnapshot = await db.ref("users").once("value");
+          const users = usersSnapshot.val() || {};
+
+          let updated = 0;
+          let removedBase64 = 0;
+
+          for (const [userId, userData] of Object.entries(users)) {
+              const updates = {};
+
+              // 🗑️ УДАЛЯЕМ ОТКРЫТЫЕ ПАРОЛИ
+              if (userData.password) {
+                  updates.password = null;
+                  updated++;
+                  console.log(`🗑️ Удален открытый пароль для: ${userData.name}`);
+              }
+
+              // 🗑️ УДАЛЯЕМ BASE64 ШИФРОВАНИЕ (если есть хэш)
+              if (userData.encryptedPassword && userData.passwordHash) {
+                  updates.encryptedPassword = null;
+                  removedBase64++;
+                  console.log(`🗑️ Удален base64 пароль для: ${userData.name} (есть хэш)`);
+              }
+
+              // 💾 ПРИМЕНЯЕМ ОБНОВЛЕНИЯ
+              if (Object.keys(updates).length > 0) {
+                  await db.ref(`users/${userId}`).update(updates);
+              }
+          }
+
+          res.json({
+              success: true,
+              message: `Очистка завершена`,
+              removedOpenPasswords: updated,
+              removedBase64Passwords: removedBase64,
+              totalCleaned: updated + removedBase64
+          });
+
+      } catch (error) {
+          console.error("❌ Ошибка очистки паролей:", error);
+          res.status(500).json({ error: "Ошибка сервера: " + error.message });
+      }
+  });
+
+  app.get("/admin/password-stats", verifyToken, async (req, res) => {
+      try {
+          const usersSnapshot = await db.ref("users").once("value");
+          const users = usersSnapshot.val() || {};
+
+          let stats = {
+              totalUsers: Object.keys(users).length,
+              withPasswordHash: 0,
+              withOpenPassword: 0,
+              withBase64Password: 0,
+              noPasswordData: 0
+          };
+
+          for (const [userId, userData] of Object.entries(users)) {
+              if (userData.passwordHash) stats.withPasswordHash++;
+              if (userData.password) stats.withOpenPassword++;
+              if (userData.encryptedPassword) stats.withBase64Password++;
+              if (!userData.passwordHash && !userData.password && !userData.encryptedPassword) {
+                  stats.noPasswordData++;
+              }
+          }
+
+          res.json({
+              success: true,
+              stats: stats,
+              recommendations: getPasswordRecommendations(stats)
+          });
+
+      } catch (error) {
+          console.error("❌ Ошибка получения статистики:", error);
+          res.status(500).json({ error: "Ошибка сервера: " + error.message });
+      }
+  });
+
+  function getPasswordRecommendations(stats) {
+      const recommendations = [];
+
+      if (stats.withOpenPassword > 0) {
+          recommendations.push(`⚠️ Найдено ${stats.withOpenPassword} пользователей с открытыми паролями. Запустите очистку.`);
+      }
+
+      if (stats.withBase64Password > 0 && stats.withPasswordHash === stats.totalUsers) {
+          recommendations.push(`ℹ️ Найдено ${stats.withBase64Password} пользователей с base64 паролями. Можно безопасно удалить.`);
+      }
+
+      if (stats.noPasswordData > 0) {
+          recommendations.push(`❌ Найдено ${stats.noPasswordData} пользователей без данных паролей.`);
+      }
+
+      if (stats.withPasswordHash === stats.totalUsers && stats.withOpenPassword === 0) {
+          recommendations.push("✅ База данных в отличном состоянии!");
+      }
+
+      return recommendations;
+  }
 
   function startExternalKeepAlive() {
     // Функция для поддержания активности на Render.com
