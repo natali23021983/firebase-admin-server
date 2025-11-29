@@ -9,6 +9,12 @@ const express = require("express");
 const cors = require("cors");
 const admin = require("firebase-admin");
 const multer = require("multer");
+const crypto = require('crypto');
+
+function hashPassword(password) {
+    return crypto.createHash('sha256').update(password).digest('hex');
+}
+
 const { v4: uuidv4 } = require("uuid");
 const {
   S3Client,
@@ -3194,6 +3200,50 @@ function startMainServer() {
       secretKey: process.env.YC_SECRET_KEY ? "Есть" : "Нет",
       region: process.env.YC_S3_REGION,
     });
+  });
+
+  // Добавляем после других эндпоинтов
+  app.post("/migrate-to-hash", async (req, res) => {
+      try {
+          const usersSnap = await db.ref("users").once("value");
+          const users = usersSnap.val() || {};
+
+          let migrated = 0;
+          let errors = 0;
+
+          for (const [userId, userData] of Object.entries(users)) {
+              try {
+                  // Расшифровываем base64
+                  if (userData.encryptedPassword) {
+                      const originalPassword = Buffer.from(userData.encryptedPassword, 'base64').toString('utf-8');
+                      const passwordHash = hashPassword(originalPassword);
+
+                      // Обновляем запись
+                      await db.ref(`users/${userId}`).update({
+                          passwordHash: passwordHash,
+                          encryptedPassword: null // Удаляем старый формат
+                      });
+
+                      migrated++;
+                      console.log(`✅ Мигрирован: ${userData.name}`);
+                  }
+              } catch (error) {
+                  errors++;
+                  console.error(`❌ Ошибка: ${userId}`, error);
+              }
+          }
+
+          res.json({
+              success: true,
+              message: `Мигрировано: ${migrated}, ошибок: ${errors}`,
+              migrated: migrated,
+              errors: errors
+          });
+
+      } catch (error) {
+          console.error("❌ Ошибка миграции:", error);
+          res.status(500).json({ error: error.message });
+      }
   });
 
   function startExternalKeepAlive() {
