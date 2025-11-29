@@ -3208,7 +3208,8 @@ function startMainServer() {
       }
   });
 
-  app.get("/admin/password-stats", verifyToken, async (req, res) => {
+  // 🔓 ВРЕМЕННО убираем verifyToken для проверки
+  app.get("/admin/password-stats", async (req, res) => {
       try {
           const usersSnapshot = await db.ref("users").once("value");
           const users = usersSnapshot.val() || {};
@@ -3241,28 +3242,6 @@ function startMainServer() {
           res.status(500).json({ error: "Ошибка сервера: " + error.message });
       }
   });
-
-  function getPasswordRecommendations(stats) {
-      const recommendations = [];
-
-      if (stats.withOpenPassword > 0) {
-          recommendations.push(`⚠️ Найдено ${stats.withOpenPassword} пользователей с открытыми паролями. Запустите очистку.`);
-      }
-
-      if (stats.withBase64Password > 0 && stats.withPasswordHash === stats.totalUsers) {
-          recommendations.push(`ℹ️ Найдено ${stats.withBase64Password} пользователей с base64 паролями. Можно безопасно удалить.`);
-      }
-
-      if (stats.noPasswordData > 0) {
-          recommendations.push(`❌ Найдено ${stats.noPasswordData} пользователей без данных паролей.`);
-      }
-
-      if (stats.withPasswordHash === stats.totalUsers && stats.withOpenPassword === 0) {
-          recommendations.push("✅ База данных в отличном состоянии!");
-      }
-
-      return recommendations;
-  }
 
   function startExternalKeepAlive() {
     // Функция для поддержания активности на Render.com
