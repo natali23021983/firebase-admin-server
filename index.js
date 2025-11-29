@@ -3118,6 +3118,30 @@ function startMainServer() {
     });
   });
 
+  function startExternalKeepAlive() {
+    // Функция для поддержания активности на Render.com
+    if (!process.env.RENDER_EXTERNAL_URL) return;
+
+    console.log("Внешний keep-alive активирован для Render.com");
+
+    const externalUrl = process.env.RENDER_EXTERNAL_URL;
+
+    // Основной интервал - каждые 60 секунд
+    setInterval(() => {
+      require("https")
+        .request(
+          externalUrl + "/health",
+          {
+            timeout: 5000,
+          },
+          () => {},
+        )
+        .on("error", () => {})
+        .end();
+    }, 60000);
+
+    console.log("Keep-alive запущен: запросы каждые 60 секунд");
+  }
 
   // Запуск сервера
   if (process.env.RENDER_EXTERNAL_URL) {
